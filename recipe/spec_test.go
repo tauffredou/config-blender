@@ -1,6 +1,7 @@
 package recipe_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -80,7 +81,7 @@ func TestSpec_MaterializeThenResolve(t *testing.T) {
 		},
 	}
 
-	r, err := spec.Materialize(gitsource.NewFetcher(nil), mapResolver{"repo": repoDir})
+	r, err := spec.Materialize(context.Background(), gitsource.NewFetcher(nil), mapResolver{"repo": repoDir})
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
@@ -117,7 +118,7 @@ func TestSpec_MaterializeMissingFileFails(t *testing.T) {
 		},
 	}
 
-	if _, err := spec.Materialize(gitsource.NewFetcher(nil), mapResolver{"repo": repoDir}); err == nil {
+	if _, err := spec.Materialize(context.Background(), gitsource.NewFetcher(nil), mapResolver{"repo": repoDir}); err == nil {
 		t.Fatal("Materialize: expected an error for a missing file, got nil")
 	}
 }
@@ -130,7 +131,7 @@ func TestSpec_MaterializeUnknownSourceRefFails(t *testing.T) {
 		},
 	}
 
-	if _, err := spec.Materialize(gitsource.NewFetcher(nil), mapResolver{}); err == nil {
+	if _, err := spec.Materialize(context.Background(), gitsource.NewFetcher(nil), mapResolver{}); err == nil {
 		t.Fatal("Materialize: expected an error for an unregistered SourceRef, got nil")
 	}
 }

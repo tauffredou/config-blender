@@ -13,14 +13,28 @@ export interface GitSource {
   ref: string
 }
 
+// Credentials authenticates a SourceConfig's repo (docs/04-kubernetes.md
+// §4.1, docs/05-recipe-and-crd.md §5.2bis): the Recipe DB is the only
+// place Git credentials live, so this is the one place a form ever
+// collects them. Write-only: a GET/list response never populates this on
+// a SourceConfig, even for a source that has credentials stored — only
+// PUT and the test-connection call send it.
+export interface Credentials {
+  username?: string
+  password?: string
+  sshKey?: string
+  sshUser?: string
+  sshKeyPassphrase?: string
+}
+
 // SourceConfig is a preconfigured Git source (docs/07-open-questions.md):
-// just a name and repo URL, registered once via the Sources admin screen
-// or `configblender source put`, then referenced from a layer by name —
-// never a raw URL typed into the layer builder. No credentials travel
-// over this type; internal/gitauth resolves those from the environment.
+// a name, repo URL, and (write-only) credentials, registered once via the
+// Sources admin screen or `configblender source put`, then referenced from
+// a layer by name — never a raw URL typed into the layer builder.
 export interface SourceConfig {
   name: string
   repo: string
+  auth?: Credentials
 }
 
 export type LayerType = "static" | "dynamic"

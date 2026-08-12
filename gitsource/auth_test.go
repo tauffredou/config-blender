@@ -1,6 +1,7 @@
 package gitsource
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -55,18 +56,18 @@ func TestNewAuthMap(t *testing.T) {
 		"https://example.com/private.git": specific,
 	}, fallback)
 
-	if got := resolve("https://example.com/private.git"); got != specific {
-		t.Errorf("resolve(private) = %v, want the specific credential", got)
+	if got, err := resolve("https://example.com/private.git"); err != nil || got != specific {
+		t.Errorf("resolve(private) = (%v, %v), want the specific credential and no error", got, err)
 	}
-	if got := resolve("https://example.com/other.git"); got != fallback {
-		t.Errorf("resolve(other) = %v, want the fallback credential", got)
+	if got, err := resolve("https://example.com/other.git"); err != nil || got != fallback {
+		t.Errorf("resolve(other) = (%v, %v), want the fallback credential and no error", got, err)
 	}
 }
 
 func TestNewAuthMap_NilFallback(t *testing.T) {
 	resolve := NewAuthMap(nil, nil)
-	if got := resolve("https://example.com/public.git"); got != nil {
-		t.Errorf("resolve(public) = %v, want nil (unauthenticated)", got)
+	if got, err := resolve("https://example.com/public.git"); err != nil || got != nil {
+		t.Errorf("resolve(public) = (%v, %v), want nil (unauthenticated) and no error", got, err)
 	}
 }
 
@@ -76,13 +77,13 @@ func TestFetcher_ConsultsAuthResolverWithRepoURL(t *testing.T) {
 	repoDir := newTestRepo(t, "layer.yaml", "env: dev\n")
 
 	var gotURL string
-	resolver := AuthResolver(func(repoURL string) transport.AuthMethod {
+	resolver := AuthResolver(func(repoURL string) (transport.AuthMethod, error) {
 		gotURL = repoURL
-		return nil // local path repo needs no auth; we only check it was asked
+		return nil, nil // local path repo needs no auth; we only check it was asked
 	})
 
 	f := NewFetcher(resolver)
-	if _, err := f.Content(Source{Repo: repoDir, Path: "layer.yaml", Ref: "master"}); err != nil {
+	if _, err := f.Content(context.Background(), Source{Repo: repoDir, Path: "layer.yaml", Ref: "master"}); err != nil {
 		t.Fatalf("Content: %v", err)
 	}
 	if gotURL != repoDir {

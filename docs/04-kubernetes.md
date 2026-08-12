@@ -6,6 +6,8 @@ In a Kubernetes environment, secrets are normally managed by a dedicated system 
 
 **Project positioning**: configblender is not meant to integrate technically with a secrets manager (no API calls, no Vault reference resolution). It simply needs to be able to **coexist alongside one**: each stays responsible for its own scope (secrets for Vault, the rest of the configuration for configblender), with no overlap or technical dependency between the two. Proper coverage of non-sensitive configuration by configblender removes the reason to repurpose a secrets manager beyond its intended use.
 
+Distinct from that positioning: `internal/gitsourcedb` *does* store one kind of secret — the Git credentials configblender itself uses to fetch layer content ([05-recipe-and-crd.md §5.2bis](05-recipe-and-crd.md)). That's configblender's own operational credential, not application config/secrets a Recipe resolves — same category as `CONFIGBLENDER_WRITE_TOKEN`, not a case of repurposing configblender as a Vault substitute for the config it produces.
+
 Consequence for the provenance model ([02-resolution-model.md §2.2](02-resolution-model.md)): no "external manager" source type to model — configblender's scope by construction excludes values managed by a secrets system; provenance only covers sources internal to configblender (static layers, dynamic layers).
 
 ## 4.2 Central component, multiple target clusters

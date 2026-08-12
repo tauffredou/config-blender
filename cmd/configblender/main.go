@@ -7,7 +7,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -62,18 +64,19 @@ func usage() {
   configblender history (--db <path> | --central-url <url>) --recipe <name>
   configblender resolve (--db <path> | --central-url <url>) --recipe <name>
   configblender explain (--db <path> | --central-url <url>) --recipe <name> [--key <dot.path>] [--annotate]
-  configblender source put (--db <path> | --central-url <url>) --name <name> --repo <url>
+  configblender source put (--db <path> | --central-url <url>) --name <name> --repo <url> [credential flags]
   configblender source list (--db <path> | --central-url <url>)
   configblender source delete (--db <path> | --central-url <url>) --name <name>
+  configblender source test (--db <path> | --central-url <url>) --repo <url> [credential flags]
 
 put and rollback are local only: for v1, creating or changing a Recipe is GitOps, not a network call.
 Every put is versioned (Vault-KV-v2-style); use history/get --version to inspect and rollback to revert.
 
 A layer's source is a reference to a preconfigured Git source (see "source" above), not a raw repo
-URL — register a source once, then point layers at it by name. Credentials are never part of a
-source's configuration: they're resolved from the environment per source name (GIT_TOKEN_<NAME> etc.,
-falling back to the single global GIT_* credential), so nothing secret ever passes through "source put"
-or a Recipe's stored layers.`)
+URL — register a source once, then point layers at it by name. A source's credentials, if the repo is
+private, are stored in the Recipe DB itself (--username/--password/--password-stdin for HTTPS,
+--ssh-key-file/--ssh-user/--ssh-key-passphrase for SSH — see "source put -h"); "source test" exercises
+the same flags without saving anything, to verify a repo/credential pair first.`)
 }
 
 func runPut(args []string) error {
@@ -228,7 +231,7 @@ func runExplain(args []string) error {
 
 func runSource(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: configblender source (put|list|delete) ...")
+		return fmt.Errorf("usage: configblender source (put|list|delete|test) ...")
 	}
 	switch args[0] {
 	case "put":
@@ -237,9 +240,59 @@ func runSource(args []string) error {
 		return runSourceList(args[1:])
 	case "delete":
 		return runSourceDelete(args[1:])
+	case "test":
+		return runSourceTest(args[1:])
 	default:
-		return fmt.Errorf("unknown source subcommand %q (want put, list, or delete)", args[0])
+		return fmt.Errorf("unknown source subcommand %q (want put, list, delete, or test)", args[0])
 	}
+}
+
+// credentialFlags are the source-credential flags shared by `source put`
+// (which stores them — docs/04-kubernetes.md §4.1: the Recipe DB is the
+// only place Git credentials live now, no environment-variable fallback)
+// and `source test` (which only exercises them, never stores them).
+type credentialFlags struct {
+	username         *string
+	password         *string
+	passwordStdin    *bool
+	sshKeyFile       *string
+	sshUser          *string
+	sshKeyPassphrase *string
+}
+
+func addCredentialFlags(fs *flag.FlagSet) *credentialFlags {
+	return &credentialFlags{
+		username:         fs.String("username", "", "HTTP basic auth username, for a private repo (with --password or --password-stdin)"),
+		password:         fs.String("password", "", "HTTP basic auth password or access token (with --username) — prefer --password-stdin to keep it out of shell history and process listings"),
+		passwordStdin:    fs.Bool("password-stdin", false, "read the password/token from stdin instead of --password"),
+		sshKeyFile:       fs.String("ssh-key-file", "", "path to a PEM-encoded SSH private key, for a private repo over SSH"),
+		sshUser:          fs.String("ssh-user", "", `SSH username (default "git")`),
+		sshKeyPassphrase: fs.String("ssh-key-passphrase", "", "passphrase for --ssh-key-file, if it's encrypted"),
+	}
+}
+
+// credentials resolves the parsed flags into a Credentials value, or nil if
+// none were set (unauthenticated). Must be called after fs.Parse.
+func (f *credentialFlags) credentials() (*gitsourcedb.Credentials, error) {
+	if *f.passwordStdin {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return nil, fmt.Errorf("reading password from stdin: %w", err)
+		}
+		*f.password = strings.TrimSpace(string(data))
+	}
+
+	switch {
+	case *f.username != "" || *f.password != "":
+		return &gitsourcedb.Credentials{Username: *f.username, Password: *f.password}, nil
+	case *f.sshKeyFile != "":
+		key, err := os.ReadFile(*f.sshKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading --ssh-key-file: %w", err)
+		}
+		return &gitsourcedb.Credentials{SSHKey: string(key), SSHUser: *f.sshUser, SSHKeyPassphrase: *f.sshKeyPassphrase}, nil
+	}
+	return nil, nil
 }
 
 func runSourcePut(args []string) error {
@@ -247,14 +300,44 @@ func runSourcePut(args []string) error {
 	dbPath := fs.String("db", "", "path to a local Recipe database — mutually exclusive with --central-url")
 	centralURL := fs.String("central-url", "", "base URL of the central service — mutually exclusive with --db")
 	name := fs.String("name", "", "name layers will reference this source by (LayerSpec.source.sourceRef)")
-	repo := fs.String("repo", "", "repository URL — no embedded credentials; configure GIT_TOKEN_<NAME>/GIT_USERNAME_<NAME>/GIT_SSH_KEY_<NAME> etc. in the environment instead")
+	repo := fs.String("repo", "", "repository URL")
+	credFlags := addCredentialFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *name == "" || *repo == "" {
 		return fmt.Errorf("--name and --repo are required")
 	}
-	return cli.PutSource(*dbPath, *centralURL, &gitsourcedb.GitSource{Name: *name, Repo: *repo})
+
+	auth, err := credFlags.credentials()
+	if err != nil {
+		return err
+	}
+	return cli.PutSource(*dbPath, *centralURL, &gitsourcedb.GitSource{Name: *name, Repo: *repo, Auth: auth})
+}
+
+func runSourceTest(args []string) error {
+	fs := flag.NewFlagSet("source test", flag.ExitOnError)
+	dbPath := fs.String("db", "", "path to a local Recipe database — mutually exclusive with --central-url")
+	centralURL := fs.String("central-url", "", "base URL of the central service — mutually exclusive with --db")
+	repo := fs.String("repo", "", "repository URL to test")
+	credFlags := addCredentialFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *repo == "" {
+		return fmt.Errorf("--repo is required")
+	}
+
+	auth, err := credFlags.credentials()
+	if err != nil {
+		return err
+	}
+	if err := cli.TestSourceConnection(*dbPath, *centralURL, *repo, auth); err != nil {
+		return err
+	}
+	fmt.Println("ok: connection succeeded")
+	return nil
 }
 
 func runSourceList(args []string) error {

@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
-import type { LayerSpec, RecipeSpec } from "@/lib/types"
+import type { LayerSpec, RecipeSpec, SourceConfig } from "@/lib/types"
 import { useToken } from "@/composables/useToken"
 
 const props = defineProps<{
@@ -25,6 +25,19 @@ const mode = ref<"builder" | "json">("builder")
 const specDraft = ref<RecipeSpec>(cloneSpec(props.spec))
 const jsonText = ref(JSON.stringify(specDraft.value, null, 2))
 const saving = ref(false)
+
+// Registered Git sources (docs/07-open-questions.md): the builder only
+// ever lets a layer *select* one by name — never type a raw repo URL, so
+// credentials embedded in a URL can never pass through this form.
+const sources = ref<SourceConfig[]>([])
+async function loadSources() {
+  try {
+    sources.value = (await api.listSources()).sources
+  } catch (e) {
+    toast.error("Erreur de chargement des sources Git", { description: (e as Error).message })
+  }
+}
+loadSources()
 
 function cloneSpec(spec: RecipeSpec): RecipeSpec {
   // JSON round-trip rather than structuredClone: spec is a reactive Vue
@@ -59,7 +72,7 @@ function addLayer() {
   const layer: LayerSpec = {
     name: `layer-${specDraft.value.layers.length + 1}`,
     type: "static",
-    source: { repo: "", path: "", ref: "" },
+    source: { sourceRef: sources.value[0]?.name ?? "", path: "", ref: "" },
   }
   specDraft.value.layers.push(layer)
 }
@@ -161,8 +174,14 @@ async function save() {
 
           <div class="grid grid-cols-3 gap-2">
             <div class="space-y-1">
-              <Label class="text-xs text-muted-foreground">Repo Git</Label>
-              <Input v-model="layer.source.repo" placeholder="git@github.com:org/repo.git" class="h-7 text-xs" />
+              <Label class="text-xs text-muted-foreground">Source Git</Label>
+              <select
+                v-model="layer.source.sourceRef"
+                class="dark:bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 h-7 w-full rounded-lg border bg-transparent px-2 text-xs outline-none focus-visible:ring-3"
+              >
+                <option value="" disabled>Choisir une source…</option>
+                <option v-for="src in sources" :key="src.name" :value="src.name">{{ src.name }}</option>
+              </select>
             </div>
             <div class="space-y-1">
               <Label class="text-xs text-muted-foreground">Chemin</Label>
@@ -185,6 +204,10 @@ async function save() {
         Ajouter une couche
       </Button>
 
+      <p v-if="sources.length === 0" class="text-xs text-muted-foreground">
+        Aucune source Git enregistrée — ajoutez-en une depuis « ⚙ Sources Git » dans la barre latérale
+        avant de pouvoir choisir un dépôt ici.
+      </p>
       <p v-if="specDraft.layers.length > 1" class="text-xs text-muted-foreground">
         `mergePolicy` (stratégie de fusion des listes) reste éditable en JSON avancé.
       </p>

@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"configblender/internal/cli"
+	"configblender/internal/gitsourcedb"
 )
 
 func main() {
@@ -36,6 +37,8 @@ func main() {
 		err = runResolve(os.Args[2:])
 	case "explain":
 		err = runExplain(os.Args[2:])
+	case "source":
+		err = runSource(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -59,9 +62,18 @@ func usage() {
   configblender history (--db <path> | --central-url <url>) --recipe <name>
   configblender resolve (--db <path> | --central-url <url>) --recipe <name>
   configblender explain (--db <path> | --central-url <url>) --recipe <name> [--key <dot.path>] [--annotate]
+  configblender source put (--db <path> | --central-url <url>) --name <name> --repo <url>
+  configblender source list (--db <path> | --central-url <url>)
+  configblender source delete (--db <path> | --central-url <url>) --name <name>
 
 put and rollback are local only: for v1, creating or changing a Recipe is GitOps, not a network call.
-Every put is versioned (Vault-KV-v2-style); use history/get --version to inspect and rollback to revert.`)
+Every put is versioned (Vault-KV-v2-style); use history/get --version to inspect and rollback to revert.
+
+A layer's source is a reference to a preconfigured Git source (see "source" above), not a raw repo
+URL — register a source once, then point layers at it by name. Credentials are never part of a
+source's configuration: they're resolved from the environment per source name (GIT_TOKEN_<NAME> etc.,
+falling back to the single global GIT_* credential), so nothing secret ever passes through "source put"
+or a Recipe's stored layers.`)
 }
 
 func runPut(args []string) error {
@@ -212,6 +224,69 @@ func runExplain(args []string) error {
 		return fmt.Errorf("key %q not found in the resolved config", *key)
 	}
 	return printYAML(source)
+}
+
+func runSource(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: configblender source (put|list|delete) ...")
+	}
+	switch args[0] {
+	case "put":
+		return runSourcePut(args[1:])
+	case "list":
+		return runSourceList(args[1:])
+	case "delete":
+		return runSourceDelete(args[1:])
+	default:
+		return fmt.Errorf("unknown source subcommand %q (want put, list, or delete)", args[0])
+	}
+}
+
+func runSourcePut(args []string) error {
+	fs := flag.NewFlagSet("source put", flag.ExitOnError)
+	dbPath := fs.String("db", "", "path to a local Recipe database — mutually exclusive with --central-url")
+	centralURL := fs.String("central-url", "", "base URL of the central service — mutually exclusive with --db")
+	name := fs.String("name", "", "name layers will reference this source by (LayerSpec.source.sourceRef)")
+	repo := fs.String("repo", "", "repository URL — no embedded credentials; configure GIT_TOKEN_<NAME>/GIT_USERNAME_<NAME>/GIT_SSH_KEY_<NAME> etc. in the environment instead")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" || *repo == "" {
+		return fmt.Errorf("--name and --repo are required")
+	}
+	return cli.PutSource(*dbPath, *centralURL, &gitsourcedb.GitSource{Name: *name, Repo: *repo})
+}
+
+func runSourceList(args []string) error {
+	fs := flag.NewFlagSet("source list", flag.ExitOnError)
+	dbPath := fs.String("db", "", "path to a local Recipe database — mutually exclusive with --central-url")
+	centralURL := fs.String("central-url", "", "base URL of the central service — mutually exclusive with --db")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	sources, err := cli.ListSources(*dbPath, *centralURL)
+	if err != nil {
+		return err
+	}
+	for _, src := range sources {
+		fmt.Printf("%s\t%s\n", src.Name, src.Repo)
+	}
+	return nil
+}
+
+func runSourceDelete(args []string) error {
+	fs := flag.NewFlagSet("source delete", flag.ExitOnError)
+	dbPath := fs.String("db", "", "path to a local Recipe database — mutually exclusive with --central-url")
+	centralURL := fs.String("central-url", "", "base URL of the central service — mutually exclusive with --db")
+	name := fs.String("name", "", "name of the Git source to delete")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *name == "" {
+		return fmt.Errorf("--name is required")
+	}
+	return cli.DeleteSource(*dbPath, *centralURL, *name)
 }
 
 func printYAML(v any) error {

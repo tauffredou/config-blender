@@ -21,6 +21,7 @@ import RecipeSidebar from "@/components/RecipeSidebar.vue"
 import RecipeEditor from "@/components/RecipeEditor.vue"
 import RecipeHistory from "@/components/RecipeHistory.vue"
 import RecipeResolve from "@/components/RecipeResolve.vue"
+import SourcesAdmin from "@/components/SourcesAdmin.vue"
 
 const { token } = useToken()
 
@@ -29,6 +30,7 @@ const currentName = ref<string | null>(null)
 const currentSpec = ref<RecipeSpec | null>(null)
 const activeTab = ref("edit")
 const isNew = ref(false)
+const sourcesActive = ref(false)
 
 const newRecipeOpen = ref(false)
 const newRecipeName = ref("")
@@ -45,7 +47,12 @@ async function loadRecipes() {
 }
 loadRecipes()
 
+function openSources() {
+  sourcesActive.value = true
+}
+
 async function selectRecipe(name: string) {
+  sourcesActive.value = false
   isNew.value = false
   currentName.value = name
   activeTab.value = "edit"
@@ -70,6 +77,7 @@ function confirmCreateRecipe() {
     return
   }
   isNew.value = true
+  sourcesActive.value = false
   currentName.value = name
   currentSpec.value = { name, layers: [], mergePolicy: [] }
   activeTab.value = "edit"
@@ -105,39 +113,50 @@ async function onRolledBack() {
     </header>
 
     <div class="flex flex-1">
-      <RecipeSidebar :recipes="recipes" :current="currentName" @select="selectRecipe" @create="openCreateDialog" />
+      <RecipeSidebar
+        :recipes="recipes"
+        :current="currentName"
+        :sources-active="sourcesActive"
+        @select="selectRecipe"
+        @create="openCreateDialog"
+        @open-sources="openSources"
+      />
 
       <main class="flex-1 p-6">
-        <p v-if="!hasSelection" class="text-sm text-muted-foreground">
-          Sélectionnez une Recipe à gauche, ou créez-en une nouvelle.
-        </p>
+        <SourcesAdmin v-if="sourcesActive" />
 
-        <div v-else class="space-y-4">
-          <h2 class="text-lg font-semibold">
-            {{ currentName }}
-            <span v-if="isNew" class="ml-2 text-xs font-normal text-muted-foreground">(non enregistrée)</span>
-          </h2>
+        <template v-else>
+          <p v-if="!hasSelection" class="text-sm text-muted-foreground">
+            Sélectionnez une Recipe à gauche, ou créez-en une nouvelle.
+          </p>
 
-          <Tabs v-model="activeTab">
-            <TabsList>
-              <TabsTrigger value="edit">Éditer</TabsTrigger>
-              <TabsTrigger value="history" :disabled="isNew">Historique</TabsTrigger>
-              <TabsTrigger value="resolve" :disabled="isNew">Resolve / Explain</TabsTrigger>
-            </TabsList>
+          <div v-else class="space-y-4">
+            <h2 class="text-lg font-semibold">
+              {{ currentName }}
+              <span v-if="isNew" class="ml-2 text-xs font-normal text-muted-foreground">(non enregistrée)</span>
+            </h2>
 
-            <TabsContent value="edit">
-              <RecipeEditor :name="currentName!" :spec="currentSpec!" @saved="onSaved" />
-            </TabsContent>
+            <Tabs v-model="activeTab">
+              <TabsList>
+                <TabsTrigger value="edit">Éditer</TabsTrigger>
+                <TabsTrigger value="history" :disabled="isNew">Historique</TabsTrigger>
+                <TabsTrigger value="resolve" :disabled="isNew">Resolve / Explain</TabsTrigger>
+              </TabsList>
 
-            <TabsContent value="history">
-              <RecipeHistory :name="currentName!" :latest-spec="currentSpec!" @rolled-back="onRolledBack" />
-            </TabsContent>
+              <TabsContent value="edit">
+                <RecipeEditor :name="currentName!" :spec="currentSpec!" @saved="onSaved" />
+              </TabsContent>
 
-            <TabsContent value="resolve">
-              <RecipeResolve :name="currentName!" :layers="currentSpec!.layers.map((l) => l.name)" />
-            </TabsContent>
-          </Tabs>
-        </div>
+              <TabsContent value="history">
+                <RecipeHistory :name="currentName!" :latest-spec="currentSpec!" @rolled-back="onRolledBack" />
+              </TabsContent>
+
+              <TabsContent value="resolve">
+                <RecipeResolve :name="currentName!" :layers="currentSpec!.layers.map((l) => l.name)" />
+              </TabsContent>
+            </Tabs>
+          </div>
+        </template>
       </main>
     </div>
 

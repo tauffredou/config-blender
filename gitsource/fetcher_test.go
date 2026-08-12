@@ -1,6 +1,7 @@
 package gitsource
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,7 +51,7 @@ func TestFetcher_Content(t *testing.T) {
 	repoDir := newTestRepo(t, "layers/env-dev.yaml", "env: dev\n")
 
 	f := NewFetcher(nil)
-	got, err := f.Content(Source{Repo: repoDir, Path: "layers/env-dev.yaml", Ref: "master"})
+	got, err := f.Content(context.Background(), Source{Repo: repoDir, Path: "layers/env-dev.yaml", Ref: "master"})
 	if err != nil {
 		t.Fatalf("Content: %v", err)
 	}
@@ -63,7 +64,7 @@ func TestFetcher_MissingRefFails(t *testing.T) {
 	repoDir := newTestRepo(t, "layers/base.yaml", "port: 8080\n")
 
 	f := NewFetcher(nil)
-	if _, err := f.Content(Source{Repo: repoDir, Path: "layers/base.yaml"}); err == nil {
+	if _, err := f.Content(context.Background(), Source{Repo: repoDir, Path: "layers/base.yaml"}); err == nil {
 		t.Fatal("Content: expected an error for a missing ref, got nil")
 	}
 }
@@ -72,7 +73,7 @@ func TestFetcher_UpdatesOnSubsequentFetch(t *testing.T) {
 	repoDir := newTestRepo(t, "layers/base.yaml", "port: 8080\n")
 
 	f := NewFetcher(nil)
-	first, err := f.Content(Source{Repo: repoDir, Path: "layers/base.yaml", Ref: "master"})
+	first, err := f.Content(context.Background(), Source{Repo: repoDir, Path: "layers/base.yaml", Ref: "master"})
 	if err != nil {
 		t.Fatalf("Content (first): %v", err)
 	}
@@ -102,7 +103,7 @@ func TestFetcher_UpdatesOnSubsequentFetch(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	second, err := f.Content(Source{Repo: repoDir, Path: "layers/base.yaml", Ref: "master"})
+	second, err := f.Content(context.Background(), Source{Repo: repoDir, Path: "layers/base.yaml", Ref: "master"})
 	if err != nil {
 		t.Fatalf("Content (second): %v", err)
 	}

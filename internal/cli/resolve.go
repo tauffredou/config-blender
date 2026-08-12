@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -25,11 +26,11 @@ import (
 // only for v1, so no equivalent write interface exists here — `put` and
 // `rollback` go straight to internal/recipedb, local only).
 type RecipeStore interface {
-	Resolve(name string) (*resolve.Result, error)
-	Get(name string) (*recipe.Spec, error)
-	GetVersion(name string, version int) (*recipe.Spec, error)
-	ListVersions(name string) ([]recipedb.VersionInfo, error)
-	List() ([]string, error)
+	Resolve(ctx context.Context, name string) (*resolve.Result, error)
+	Get(ctx context.Context, name string) (*recipe.Spec, error)
+	GetVersion(ctx context.Context, name string, version int) (*recipe.Spec, error)
+	ListVersions(ctx context.Context, name string) ([]recipedb.VersionInfo, error)
+	List(ctx context.Context) ([]string, error)
 }
 
 // openStore opens exactly one of a local Recipe database (dbPath) or a
@@ -63,7 +64,7 @@ func ResolveRecipe(dbPath, centralURL, recipeName string) (*resolve.Result, erro
 	}
 	defer closeStore()
 
-	return store.Resolve(recipeName)
+	return store.Resolve(context.Background(), recipeName)
 }
 
 // ListRecipeNames returns every Recipe name known to a local database or
@@ -75,7 +76,7 @@ func ListRecipeNames(dbPath, centralURL string) ([]string, error) {
 	}
 	defer closeStore()
 
-	return store.List()
+	return store.List(context.Background())
 }
 
 // GetRecipeSpec returns the declarative Spec of recipeName — the latest
@@ -89,10 +90,11 @@ func GetRecipeSpec(dbPath, centralURL, recipeName string, version int) (*recipe.
 	}
 	defer closeStore()
 
+	ctx := context.Background()
 	if version > 0 {
-		return store.GetVersion(recipeName, version)
+		return store.GetVersion(ctx, recipeName, version)
 	}
-	return store.Get(recipeName)
+	return store.Get(ctx, recipeName)
 }
 
 // ListRecipeVersions returns the version history of recipeName.
@@ -103,16 +105,16 @@ func ListRecipeVersions(dbPath, centralURL, recipeName string) ([]recipedb.Versi
 	}
 	defer closeStore()
 
-	return store.ListVersions(recipeName)
+	return store.ListVersions(context.Background(), recipeName)
 }
 
 // SourceStore is what `source list`/`source put`/`source delete` need —
 // satisfied by a local internal/recipesource.Store (sharing the same
 // bbolt file as Recipes) or a remote internal/centralclient.Client.
 type SourceStore interface {
-	ListSources() ([]gitsourcedb.GitSource, error)
-	PutSource(src *gitsourcedb.GitSource) error
-	DeleteSource(name string) error
+	ListSources(ctx context.Context) ([]gitsourcedb.GitSource, error)
+	PutSource(ctx context.Context, name string, src *gitsourcedb.GitSource) error
+	DeleteSource(ctx context.Context, name string) error
 }
 
 // openSourceStore opens exactly one of a local Recipe database (dbPath —
@@ -143,7 +145,7 @@ func ListSources(dbPath, centralURL string) ([]gitsourcedb.GitSource, error) {
 	}
 	defer closeStore()
 
-	return store.ListSources()
+	return store.ListSources(context.Background())
 }
 
 // PutSource registers or replaces a Git source in a local database or the
@@ -155,7 +157,7 @@ func PutSource(dbPath, centralURL string, src *gitsourcedb.GitSource) error {
 	}
 	defer closeStore()
 
-	return store.PutSource(src)
+	return store.PutSource(context.Background(), src.Name, src)
 }
 
 // DeleteSource removes a Git source from a local database or the central
@@ -167,7 +169,7 @@ func DeleteSource(dbPath, centralURL, name string) error {
 	}
 	defer closeStore()
 
-	return store.DeleteSource(name)
+	return store.DeleteSource(context.Background(), name)
 }
 
 // LookupPath descends a dot-separated key path (e.g. "server.middlewares")

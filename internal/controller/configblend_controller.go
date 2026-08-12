@@ -40,7 +40,7 @@ const DefaultRefreshInterval = time.Hour
 // or a network client to the central service (internal/centralclient, the
 // ESO+Vault-shaped multi-cluster deployment).
 type RecipeResolver interface {
-	Resolve(name string) (*resolve.Result, error)
+	Resolve(ctx context.Context, name string) (*resolve.Result, error)
 }
 
 // ConfigBlendReconciler reconciles a ConfigBlend object.
@@ -55,6 +55,8 @@ type ConfigBlendReconciler struct {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 
 func (r *ConfigBlendReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := ctrl.LoggerFrom(ctx)
+
 	var cb configblenderv1alpha1.ConfigBlend
 	if err := r.Get(ctx, req.NamespacedName, &cb); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -62,8 +64,9 @@ func (r *ConfigBlendReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	interval := refreshInterval(&cb)
 
-	result, resolveErr := r.Recipes.Resolve(cb.Spec.Recipe)
+	result, resolveErr := r.Recipes.Resolve(ctx, cb.Spec.Recipe)
 	if resolveErr != nil {
+		log.Error(resolveErr, "resolving recipe failed", "recipe", cb.Spec.Recipe)
 		r.setCondition(&cb, metav1.ConditionFalse, "ResolveFailed", resolveErr.Error())
 		if err := r.Status().Update(ctx, &cb); err != nil {
 			return ctrl.Result{}, err
@@ -95,6 +98,7 @@ func (r *ConfigBlendReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return controllerutil.SetControllerReference(&cb, cm, r.Scheme)
 	})
 	if err != nil {
+		log.Error(err, "syncing target ConfigMap failed", "configMap", cb.Spec.Target.ConfigMapName)
 		r.setCondition(&cb, metav1.ConditionFalse, "ConfigMapSyncFailed", err.Error())
 		if statusErr := r.Status().Update(ctx, &cb); statusErr != nil {
 			return ctrl.Result{}, statusErr
@@ -110,6 +114,7 @@ func (r *ConfigBlendReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	log.V(1).Info("reconciled", "recipe", cb.Spec.Recipe, "configMap", cb.Spec.Target.ConfigMapName, "requeueAfter", interval)
 	return ctrl.Result{RequeueAfter: interval}, nil
 }
 

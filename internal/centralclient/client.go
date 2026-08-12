@@ -8,6 +8,7 @@ package centralclient
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -54,12 +55,25 @@ func (c *Client) authorize(req *http.Request) {
 	}
 }
 
-func (c *Client) Resolve(name string) (*resolve.Result, error) {
-	u := c.baseURL + centralapi.ResolvePath + "?recipe=" + url.QueryEscape(name)
-
-	resp, err := c.http.Get(u)
+func (c *Client) get(ctx context.Context, u string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("centralclient: building request: %w", err)
+	}
+	c.authorize(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("centralclient: calling central service: %w", err)
+	}
+	return resp, nil
+}
+
+func (c *Client) Resolve(ctx context.Context, name string) (*resolve.Result, error) {
+	u := c.baseURL + centralapi.ResolvePath + "?recipe=" + url.QueryEscape(name)
+
+	resp, err := c.get(ctx, u)
+	if err != nil {
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -77,13 +91,13 @@ func (c *Client) Resolve(name string) (*resolve.Result, error) {
 
 // Put creates a new version of spec.Name on the central service — requires
 // WithToken (docs/05-recipe-and-crd.md §5.3).
-func (c *Client) Put(spec *recipe.Spec) error {
+func (c *Client) Put(ctx context.Context, spec *recipe.Spec) error {
 	body, err := json.Marshal(spec)
 	if err != nil {
 		return fmt.Errorf("centralclient: encoding recipe %q: %w", spec.Name, err)
 	}
 	u := c.baseURL + centralapi.RecipesPath + "/" + url.PathEscape(spec.Name)
-	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("centralclient: building request for %q: %w", spec.Name, err)
 	}
@@ -105,10 +119,10 @@ func (c *Client) Put(spec *recipe.Spec) error {
 
 // Rollback restores version as a new version of the Recipe named name —
 // requires WithToken (docs/05-recipe-and-crd.md §5.3).
-func (c *Client) Rollback(name string, version int) error {
+func (c *Client) Rollback(ctx context.Context, name string, version int) error {
 	body, _ := json.Marshal(centralapi.RollbackRequest{Version: version})
 	u := c.baseURL + centralapi.RecipesPath + "/" + url.PathEscape(name) + "/rollback"
-	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("centralclient: building request for %q: %w", name, err)
 	}
@@ -129,12 +143,12 @@ func (c *Client) Rollback(name string, version int) error {
 }
 
 // Get fetches the stored Spec for name (latest version).
-func (c *Client) Get(name string) (*recipe.Spec, error) {
+func (c *Client) Get(ctx context.Context, name string) (*recipe.Spec, error) {
 	u := c.baseURL + centralapi.RecipesPath + "/" + url.PathEscape(name)
 
-	resp, err := c.http.Get(u)
+	resp, err := c.get(ctx, u)
 	if err != nil {
-		return nil, fmt.Errorf("centralclient: calling central service: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -152,12 +166,12 @@ func (c *Client) Get(name string) (*recipe.Spec, error) {
 
 // GetVersion fetches a specific historical version of the Spec named name
 // (docs/05-recipe-and-crd.md §5.3 — Vault-KV-v2-style history).
-func (c *Client) GetVersion(name string, version int) (*recipe.Spec, error) {
+func (c *Client) GetVersion(ctx context.Context, name string, version int) (*recipe.Spec, error) {
 	u := c.baseURL + centralapi.RecipesPath + "/" + url.PathEscape(name) + "/versions/" + strconv.Itoa(version)
 
-	resp, err := c.http.Get(u)
+	resp, err := c.get(ctx, u)
 	if err != nil {
-		return nil, fmt.Errorf("centralclient: calling central service: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -174,12 +188,12 @@ func (c *Client) GetVersion(name string, version int) (*recipe.Spec, error) {
 }
 
 // ListVersions returns the version history of the Recipe named name.
-func (c *Client) ListVersions(name string) ([]recipedb.VersionInfo, error) {
+func (c *Client) ListVersions(ctx context.Context, name string) ([]recipedb.VersionInfo, error) {
 	u := c.baseURL + centralapi.RecipesPath + "/" + url.PathEscape(name) + "/versions"
 
-	resp, err := c.http.Get(u)
+	resp, err := c.get(ctx, u)
 	if err != nil {
-		return nil, fmt.Errorf("centralclient: calling central service: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -200,10 +214,10 @@ func (c *Client) ListVersions(name string) ([]recipedb.VersionInfo, error) {
 }
 
 // List returns the names of every Recipe known to the central service.
-func (c *Client) List() ([]string, error) {
-	resp, err := c.http.Get(c.baseURL + centralapi.RecipesPath)
+func (c *Client) List(ctx context.Context) ([]string, error) {
+	resp, err := c.get(ctx, c.baseURL+centralapi.RecipesPath)
 	if err != nil {
-		return nil, fmt.Errorf("centralclient: calling central service: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -220,10 +234,10 @@ func (c *Client) List() ([]string, error) {
 }
 
 // ListSources returns every Git source registered with the central service.
-func (c *Client) ListSources() ([]gitsourcedb.GitSource, error) {
-	resp, err := c.http.Get(c.baseURL + centralapi.SourcesPath)
+func (c *Client) ListSources(ctx context.Context) ([]gitsourcedb.GitSource, error) {
+	resp, err := c.get(ctx, c.baseURL+centralapi.SourcesPath)
 	if err != nil {
-		return nil, fmt.Errorf("centralclient: calling central service: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -243,17 +257,18 @@ func (c *Client) ListSources() ([]gitsourcedb.GitSource, error) {
 	return sources, nil
 }
 
-// PutSource registers or replaces src on the central service — requires
-// WithToken (docs/05-recipe-and-crd.md §5.3).
-func (c *Client) PutSource(src *gitsourcedb.GitSource) error {
-	body, err := json.Marshal(centralapi.GitSource{Name: src.Name, Repo: src.Repo})
+// PutSource registers or replaces the Git source addressed by name on the
+// central service — requires WithToken (docs/05-recipe-and-crd.md §5.3).
+// name is authoritative over src.Name, same rule as Put.
+func (c *Client) PutSource(ctx context.Context, name string, src *gitsourcedb.GitSource) error {
+	body, err := json.Marshal(centralapi.GitSource{Name: name, Repo: src.Repo})
 	if err != nil {
-		return fmt.Errorf("centralclient: encoding source %q: %w", src.Name, err)
+		return fmt.Errorf("centralclient: encoding source %q: %w", name, err)
 	}
-	u := c.baseURL + centralapi.SourcesPath + "/" + url.PathEscape(src.Name)
-	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(body))
+	u := c.baseURL + centralapi.SourcesPath + "/" + url.PathEscape(name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("centralclient: building request for %q: %w", src.Name, err)
+		return fmt.Errorf("centralclient: building request for %q: %w", name, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.authorize(req)
@@ -266,16 +281,16 @@ func (c *Client) PutSource(src *gitsourcedb.GitSource) error {
 
 	if resp.StatusCode != http.StatusNoContent {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("centralclient: putting source %q: central service returned %d: %s", src.Name, resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return fmt.Errorf("centralclient: putting source %q: central service returned %d: %s", name, resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 	return nil
 }
 
 // DeleteSource removes the Git source named name from the central service —
 // requires WithToken (docs/05-recipe-and-crd.md §5.3).
-func (c *Client) DeleteSource(name string) error {
+func (c *Client) DeleteSource(ctx context.Context, name string) error {
 	u := c.baseURL + centralapi.SourcesPath + "/" + url.PathEscape(name)
-	req, err := http.NewRequest(http.MethodDelete, u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, nil)
 	if err != nil {
 		return fmt.Errorf("centralclient: building request for %q: %w", name, err)
 	}

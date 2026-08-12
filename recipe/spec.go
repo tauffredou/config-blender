@@ -1,6 +1,7 @@
 package recipe
 
 import (
+	"context"
 	"fmt"
 
 	"configblender/gitsource"
@@ -52,7 +53,7 @@ type Spec struct {
 // via sources, fetches its content from Git via f, and returns the
 // ready-to-resolve Recipe (CONCEPTION.md section 5.3/9). It is the only
 // place Git I/O happens; resolve.Resolve itself has no knowledge of Git.
-func (s *Spec) Materialize(f *gitsource.Fetcher, sources SourceResolver) (*Recipe, error) {
+func (s *Spec) Materialize(ctx context.Context, f *gitsource.Fetcher, sources SourceResolver) (*Recipe, error) {
 	layers := make([]Layer, len(s.Layers))
 	for i, ls := range s.Layers {
 		repoURL, err := sources.ResolveSource(ls.Source.SourceRef)
@@ -61,7 +62,7 @@ func (s *Spec) Materialize(f *gitsource.Fetcher, sources SourceResolver) (*Recip
 		}
 		src := gitsource.Source{Repo: repoURL, Path: ls.Source.Path, Ref: ls.Source.Ref}
 
-		content, err := f.Content(src)
+		content, err := f.Content(ctx, src)
 		if err != nil {
 			return nil, err
 		}

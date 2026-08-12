@@ -66,11 +66,11 @@ func newTestStore(t *testing.T, recipeName, repoDir string) *recipesource.Store 
 	}
 	t.Cleanup(func() { store.Close() })
 
-	if err := store.PutSource(&gitsourcedb.GitSource{Name: "repo", Repo: repoDir}); err != nil {
+	ctx := context.Background()
+	if err := store.PutSource(ctx, "repo", &gitsourcedb.GitSource{Repo: repoDir}); err != nil {
 		t.Fatalf("PutSource: %v", err)
 	}
-	err = store.Put(&recipe.Spec{
-		Name: recipeName,
+	err = store.Put(ctx, recipeName, &recipe.Spec{
 		Layers: []recipe.LayerSpec{
 			{Name: "base", Type: recipe.LayerStatic, Source: recipe.LayerSource{SourceRef: "repo", Path: "base.yaml", Ref: "master"}},
 		},

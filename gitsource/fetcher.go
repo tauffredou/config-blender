@@ -5,6 +5,7 @@
 package gitsource
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -51,13 +52,17 @@ func NewFetcher(auth AuthResolver) *Fetcher {
 }
 
 // Content returns the file content of src at its ref, cloning or updating
-// the repository's in-memory cache as needed.
-func (f *Fetcher) Content(src Source) (string, error) {
+// the repository's in-memory cache as needed. ctx bounds the clone/fetch
+// network call — the only I/O in this method — so a caller's timeout or
+// cancellation (an HTTP request being aborted, a reconcile being superseded)
+// actually stops an in-flight Git operation instead of running to
+// completion.
+func (f *Fetcher) Content(ctx context.Context, src Source) (string, error) {
 	if src.Ref == "" {
 		return "", fmt.Errorf("git source %s%s: ref is required", src.Repo, src.Path)
 	}
 
-	repo, err := f.repo(src.Repo)
+	repo, err := f.repo(ctx, src.Repo)
 	if err != nil {
 		return "", err
 	}
@@ -84,7 +89,7 @@ func (f *Fetcher) Content(src Source) (string, error) {
 	return content, nil
 }
 
-func (f *Fetcher) repo(repoURL string) (*git.Repository, error) {
+func (f *Fetcher) repo(ctx context.Context, repoURL string) (*git.Repository, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -94,14 +99,14 @@ func (f *Fetcher) repo(repoURL string) (*git.Repository, error) {
 	}
 
 	if repo, ok := f.repos[repoURL]; ok {
-		err := repo.Fetch(&git.FetchOptions{Auth: auth, Force: true})
+		err := repo.FetchContext(ctx, &git.FetchOptions{Auth: auth, Force: true})
 		if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return nil, fmt.Errorf("fetching %s: %w", repoURL, err)
 		}
 		return repo, nil
 	}
 
-	repo, err := git.Clone(memory.NewStorage(), nil, &git.CloneOptions{
+	repo, err := git.CloneContext(ctx, memory.NewStorage(), nil, &git.CloneOptions{
 		URL:  repoURL,
 		Auth: auth,
 	})

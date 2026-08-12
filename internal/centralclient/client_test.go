@@ -1,6 +1,7 @@
 package centralclient_test
 
 import (
+	"context"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -57,7 +58,8 @@ func newTestServer(t *testing.T) *httptest.Server {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	if err := store.PutSource(&gitsourcedb.GitSource{Name: "repo", Repo: repoDir}); err != nil {
+	ctx := context.Background()
+	if err := store.PutSource(ctx, "repo", &gitsourcedb.GitSource{Repo: repoDir}); err != nil {
 		t.Fatalf("PutSource: %v", err)
 	}
 	spec := &recipe.Spec{
@@ -66,13 +68,13 @@ func newTestServer(t *testing.T) *httptest.Server {
 			{Name: "base", Type: recipe.LayerStatic, Source: recipe.LayerSource{SourceRef: "repo", Path: "base.yaml", Ref: "master"}},
 		},
 	}
-	if err := store.Put(spec); err != nil {
+	if err := store.Put(ctx, spec.Name, spec); err != nil {
 		t.Fatalf("Put (v1): %v", err)
 	}
 	// A second version (layers untouched) so version-history tests have
 	// something to list beyond a single entry.
 	spec.MergePolicy = []recipe.MergeRule{{Path: "items", Strategy: recipe.StrategyUnion}}
-	if err := store.Put(spec); err != nil {
+	if err := store.Put(ctx, spec.Name, spec); err != nil {
 		t.Fatalf("Put (v2): %v", err)
 	}
 
@@ -85,7 +87,7 @@ func TestClient_Resolve(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil)
 
-	result, err := client.Resolve("my-app-recipe")
+	result, err := client.Resolve(context.Background(), "my-app-recipe")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -115,7 +117,7 @@ func TestClient_Resolve_UnknownRecipe(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil)
 
-	if _, err := client.Resolve("does-not-exist"); err == nil {
+	if _, err := client.Resolve(context.Background(), "does-not-exist"); err == nil {
 		t.Fatal("Resolve: expected an error for an unknown recipe, got nil")
 	}
 }
@@ -124,7 +126,7 @@ func TestClient_Get(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil)
 
-	spec, err := client.Get("my-app-recipe")
+	spec, err := client.Get(context.Background(), "my-app-recipe")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -137,7 +139,7 @@ func TestClient_Get_UnknownRecipe(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil)
 
-	if _, err := client.Get("does-not-exist"); err == nil {
+	if _, err := client.Get(context.Background(), "does-not-exist"); err == nil {
 		t.Fatal("Get: expected an error for an unknown recipe, got nil")
 	}
 }
@@ -146,7 +148,7 @@ func TestClient_List(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil)
 
-	names, err := client.List()
+	names, err := client.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -159,7 +161,7 @@ func TestClient_ListVersions(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil)
 
-	versions, err := client.ListVersions("my-app-recipe")
+	versions, err := client.ListVersions(context.Background(), "my-app-recipe")
 	if err != nil {
 		t.Fatalf("ListVersions: %v", err)
 	}
@@ -175,7 +177,7 @@ func TestClient_GetVersion(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil)
 
-	v1, err := client.GetVersion("my-app-recipe", 1)
+	v1, err := client.GetVersion(context.Background(), "my-app-recipe", 1)
 	if err != nil {
 		t.Fatalf("GetVersion(1): %v", err)
 	}
@@ -183,7 +185,7 @@ func TestClient_GetVersion(t *testing.T) {
 		t.Errorf("GetVersion(1).MergePolicy = %v, want empty (v1 predates it)", v1.MergePolicy)
 	}
 
-	v2, err := client.GetVersion("my-app-recipe", 2)
+	v2, err := client.GetVersion(context.Background(), "my-app-recipe", 2)
 	if err != nil {
 		t.Fatalf("GetVersion(2): %v", err)
 	}
@@ -196,7 +198,7 @@ func TestClient_GetVersion_Unknown(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil)
 
-	if _, err := client.GetVersion("my-app-recipe", 99); err == nil {
+	if _, err := client.GetVersion(context.Background(), "my-app-recipe", 99); err == nil {
 		t.Fatal("GetVersion: expected an error for an unknown version, got nil")
 	}
 }
@@ -211,11 +213,11 @@ func TestClient_Put(t *testing.T) {
 			{Name: "base", Type: recipe.LayerStatic, Source: recipe.LayerSource{SourceRef: "repo", Path: "base.yaml", Ref: "main"}},
 		},
 	}
-	if err := client.Put(spec); err != nil {
+	if err := client.Put(context.Background(), spec); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
-	versions, err := client.ListVersions("my-app-recipe")
+	versions, err := client.ListVersions(context.Background(), "my-app-recipe")
 	if err != nil {
 		t.Fatalf("ListVersions: %v", err)
 	}
@@ -229,7 +231,7 @@ func TestClient_Put_WithoutToken(t *testing.T) {
 	client := centralclient.New(srv.URL, nil) // no WithToken
 
 	spec := &recipe.Spec{Name: "my-app-recipe"}
-	if err := client.Put(spec); err == nil {
+	if err := client.Put(context.Background(), spec); err == nil {
 		t.Fatal("Put: expected an error without a token, got nil")
 	}
 }
@@ -239,7 +241,7 @@ func TestClient_Put_WrongToken(t *testing.T) {
 	client := centralclient.New(srv.URL, nil).WithToken("wrong-token")
 
 	spec := &recipe.Spec{Name: "my-app-recipe"}
-	if err := client.Put(spec); err == nil {
+	if err := client.Put(context.Background(), spec); err == nil {
 		t.Fatal("Put: expected an error with the wrong token, got nil")
 	}
 }
@@ -248,11 +250,11 @@ func TestClient_Rollback(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil).WithToken(testWriteToken)
 
-	if err := client.Rollback("my-app-recipe", 1); err != nil {
+	if err := client.Rollback(context.Background(), "my-app-recipe", 1); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
 
-	latest, err := client.Get("my-app-recipe")
+	latest, err := client.Get(context.Background(), "my-app-recipe")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -260,7 +262,7 @@ func TestClient_Rollback(t *testing.T) {
 		t.Errorf("Get after rollback to v1 = %+v, want empty MergePolicy (v1 predates it)", latest.MergePolicy)
 	}
 
-	versions, err := client.ListVersions("my-app-recipe")
+	versions, err := client.ListVersions(context.Background(), "my-app-recipe")
 	if err != nil {
 		t.Fatalf("ListVersions: %v", err)
 	}
@@ -273,7 +275,7 @@ func TestClient_Rollback_WithoutToken(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil)
 
-	if err := client.Rollback("my-app-recipe", 1); err == nil {
+	if err := client.Rollback(context.Background(), "my-app-recipe", 1); err == nil {
 		t.Fatal("Rollback: expected an error without a token, got nil")
 	}
 }
@@ -282,7 +284,7 @@ func TestClient_ListSources(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil)
 
-	sources, err := client.ListSources()
+	sources, err := client.ListSources(context.Background())
 	if err != nil {
 		t.Fatalf("ListSources: %v", err)
 	}
@@ -295,11 +297,11 @@ func TestClient_PutSource(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil).WithToken(testWriteToken)
 
-	if err := client.PutSource(&gitsourcedb.GitSource{Name: "second", Repo: "https://example.invalid/second.git"}); err != nil {
+	if err := client.PutSource(context.Background(), "second", &gitsourcedb.GitSource{Repo: "https://example.invalid/second.git"}); err != nil {
 		t.Fatalf("PutSource: %v", err)
 	}
 
-	sources, err := client.ListSources()
+	sources, err := client.ListSources(context.Background())
 	if err != nil {
 		t.Fatalf("ListSources: %v", err)
 	}
@@ -312,7 +314,7 @@ func TestClient_PutSource_WithoutToken(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil)
 
-	if err := client.PutSource(&gitsourcedb.GitSource{Name: "second", Repo: "https://example.invalid/second.git"}); err == nil {
+	if err := client.PutSource(context.Background(), "second", &gitsourcedb.GitSource{Repo: "https://example.invalid/second.git"}); err == nil {
 		t.Fatal("PutSource: expected an error without a token, got nil")
 	}
 }
@@ -321,11 +323,11 @@ func TestClient_DeleteSource(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil).WithToken(testWriteToken)
 
-	if err := client.DeleteSource("repo"); err != nil {
+	if err := client.DeleteSource(context.Background(), "repo"); err != nil {
 		t.Fatalf("DeleteSource: %v", err)
 	}
 
-	sources, err := client.ListSources()
+	sources, err := client.ListSources(context.Background())
 	if err != nil {
 		t.Fatalf("ListSources: %v", err)
 	}
@@ -338,7 +340,7 @@ func TestClient_DeleteSource_WithoutToken(t *testing.T) {
 	srv := newTestServer(t)
 	client := centralclient.New(srv.URL, nil)
 
-	if err := client.DeleteSource("repo"); err == nil {
+	if err := client.DeleteSource(context.Background(), "repo"); err == nil {
 		t.Fatal("DeleteSource: expected an error without a token, got nil")
 	}
 }

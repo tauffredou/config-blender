@@ -1,6 +1,7 @@
 package gitsource
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -82,7 +83,7 @@ func TestFetcher_ConsultsAuthResolverWithRepoURL(t *testing.T) {
 	})
 
 	f := NewFetcher(resolver)
-	if _, err := f.Content(Source{Repo: repoDir, Path: "layer.yaml", Ref: "master"}); err != nil {
+	if _, err := f.Content(context.Background(), Source{Repo: repoDir, Path: "layer.yaml", Ref: "master"}); err != nil {
 		t.Fatalf("Content: %v", err)
 	}
 	if gotURL != repoDir {

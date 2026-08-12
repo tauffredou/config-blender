@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,11 +61,11 @@ func TestResolveRecipe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recipesource.Open: %v", err)
 	}
-	if err := store.PutSource(&gitsourcedb.GitSource{Name: "repo", Repo: repoDir}); err != nil {
+	ctx := context.Background()
+	if err := store.PutSource(ctx, "repo", &gitsourcedb.GitSource{Repo: repoDir}); err != nil {
 		t.Fatalf("PutSource: %v", err)
 	}
-	err = store.Put(&recipe.Spec{
-		Name: "my-app-recipe",
+	err = store.Put(ctx, "my-app-recipe", &recipe.Spec{
 		Layers: []recipe.LayerSpec{
 			{Name: "base", Type: recipe.LayerStatic, Source: recipe.LayerSource{SourceRef: "repo", Path: "base.yaml", Ref: "master"}},
 			{Name: "env", Type: recipe.LayerStatic, Source: recipe.LayerSource{SourceRef: "repo", Path: "env.yaml", Ref: "master"}},

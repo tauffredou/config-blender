@@ -1,0 +1,117 @@
+# Build orchestration for configblender (go-task, https://taskfile.dev).
+#
+# Key dependency to know about: internal/centralserver/ui.go does
+# `//go:embed ui` — cmd/server (and anything that imports
+# internal/centralserver, including its tests) will not even compile until
+# webui/ has been built at least once. Every Go task below depends on
+# webui:build for that reason, not out of caution.
+version: "3"
+
+vars:
+  IMAGE_REPO: configblender
+  KIND_CLUSTER: configblender-mvp
+  PLATFORM: 'linux/{{ARCH}}'
+  BIN_DIR: bin
+
+tasks:
+  default:
+    desc: List available tasks
+    silent: true
+    cmd: task --list-all
+
+  webui:install:
+    desc: Install webui dependencies
+    dir: webui
+    sources:
+      - package.json
+      - package-lock.json
+    generates:
+      - node_modules/.package-lock.json
+    cmd: npm ci
+
+  webui:build:
+    desc: Build the web UI and embed it into internal/centralserver/ui (required for cmd/server to compile)
+    dir: webui
+    deps: [webui:install]
+    sources:
+      - "src/**/*"
+      - "index.html"
+      - "vite.config.ts"
+      - "tsconfig*.json"
+      - "components.json"
+    generates:
+      - ../internal/centralserver/ui/index.html
+    cmd: npm run build
+
+  webui:dev:
+    desc: Run the webui dev server (Vite) with hot reload against a running dev:server
+    dir: webui
+    deps: [webui:install]
+    cmd: npm run dev
+
+  build:
+    desc: Build the manager, server and CLI binaries into bin/
+    deps: [webui:build]
+    cmds:
+      - go build -o {{.BIN_DIR}}/manager ./cmd/manager
+      - go build -o {{.BIN_DIR}}/server ./cmd/server
+      - go build -o {{.BIN_DIR}}/configblender ./cmd/configblender
+
+  vet:
+    desc: go vet the module
+    deps: [webui:build]
+    cmd: go vet ./...
+
+  test:
+    desc: Run the Go test suite
+    deps: [webui:build]
+    cmd: go test ./...
+
+  check:
+    desc: build + vet + test — run before committing
+    cmds:
+      - task: build
+      - task: vet
+      - task: test
+
+  dev:server:
+    desc: Run the central service locally against a scratch Recipe DB (writes enabled, token "devtoken")
+    deps: [webui:build]
+    env:
+      CONFIGBLENDER_WRITE_TOKEN: devtoken
+    cmds:
+      - mkdir -p /tmp/configblender-dev
+      - go run ./cmd/server --recipe-db /tmp/configblender-dev/recipes.db --addr :8091
+
+  docker:manager:
+    desc: Build the manager container image (multi-stage, no local Go build needed)
+    cmd: docker build --platform {{.PLATFORM}} -f deploy/docker/manager.Dockerfile -t {{.IMAGE_REPO}}-manager:dev .
+
+  docker:server:
+    desc: Build the central service container image (webui built first — it's baked into the binary)
+    deps: [webui:build]
+    cmd: docker build --platform {{.PLATFORM}} -f deploy/docker/server.Dockerfile -t {{.IMAGE_REPO}}-server:dev .
+
+  docker:build:
+    desc: Build both container images
+    cmds:
+      - task: docker:manager
+      - task: docker:server
+
+  kind:load:
+    desc: Build both images and load them into the local kind cluster ({{.KIND_CLUSTER}})
+    deps: [docker:build]
+    cmds:
+      - kind load docker-image {{.IMAGE_REPO}}-manager:dev --name {{.KIND_CLUSTER}}
+      - kind load docker-image {{.IMAGE_REPO}}-server:dev --name {{.KIND_CLUSTER}}
+
+  crd:install:
+    desc: Install/update the ConfigBlend CRD in the current kubeconfig context
+    cmd: kubectl apply -f deploy/crd/configblend.yaml
+
+  clean:
+    desc: Remove build artifacts (binaries, webui build output, node_modules) — leaves the repo unbuildable until `task webui:build` runs again (go:embed needs internal/centralserver/ui to be non-empty)
+    cmds:
+      - rm -rf {{.BIN_DIR}}
+      - rm -rf internal/centralserver/ui
+      - rm -rf webui/node_modules webui/dist

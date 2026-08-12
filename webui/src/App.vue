@@ -134,7 +134,7 @@ async function onRolledBack() {
             </TabsContent>
 
             <TabsContent value="resolve">
-              <RecipeResolve :name="currentName!" />
+              <RecipeResolve :name="currentName!" :layers="currentSpec!.layers.map((l) => l.name)" />
             </TabsContent>
           </Tabs>
         </div>

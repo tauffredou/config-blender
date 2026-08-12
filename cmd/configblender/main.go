@@ -58,7 +58,7 @@ func usage() {
   configblender get (--db <path> | --central-url <url>) --recipe <name> [--version <n>]
   configblender history (--db <path> | --central-url <url>) --recipe <name>
   configblender resolve (--db <path> | --central-url <url>) --recipe <name>
-  configblender explain (--db <path> | --central-url <url>) --recipe <name> [--key <dot.path>]
+  configblender explain (--db <path> | --central-url <url>) --recipe <name> [--key <dot.path>] [--annotate]
 
 put and rollback are local only: for v1, creating or changing a Recipe is GitOps, not a network call.
 Every put is versioned (Vault-KV-v2-style); use history/get --version to inspect and rollback to revert.`)
@@ -176,6 +176,7 @@ func runExplain(args []string) error {
 	centralURL := fs.String("central-url", "", "base URL of the central service — mutually exclusive with --db")
 	recipeName := fs.String("recipe", "", "name of the Recipe to resolve")
 	key := fs.String("key", "", "dot-separated key path to look up, e.g. server.middlewares (default: the whole tree)")
+	annotate := fs.Bool("annotate", false, "print the final config with each value annotated by the layer (and Git source) that produced it, instead of the raw provenance tree")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -186,6 +187,20 @@ func runExplain(args []string) error {
 	res, err := cli.ResolveRecipe(*dbPath, *centralURL, *recipeName)
 	if err != nil {
 		return err
+	}
+
+	if *annotate {
+		var cfg, exp any = res.Config, res.Explain
+		if *key != "" {
+			var ok bool
+			cfg, ok = cli.LookupPath(res.Config, *key)
+			if !ok {
+				return fmt.Errorf("key %q not found in the resolved config", *key)
+			}
+			exp, _ = cli.LookupPath(res.Explain, *key)
+		}
+		fmt.Println(cli.FormatAnnotated(cfg, exp))
+		return nil
 	}
 
 	if *key == "" {

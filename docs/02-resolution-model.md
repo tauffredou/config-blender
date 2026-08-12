@@ -65,6 +65,19 @@ foo:
 - **Targeted key**: `configblender explain --recipe <name> --key server.middlewares` — walks the dot-notation path in the explain and prints only what's there (the `Provenance` — layer + source — if it's a leaf, a YAML subtree if the path points to a map). Follows the spirit of `puppet lookup --explain` (2.5) in a more minimal form: no trace of candidates rejected at each hierarchy level, only the final attribution.
 - Both modes work identically locally (`--db`) or via the central service (`--central-url`, [05-recipe-and-crd.md §5.3](05-recipe-and-crd.md)) — only the internal Go representation differs (`resolve.Provenance` locally, `map[string]any` decoded from JSON remotely, docs/07-open-questions.md), the YAML output is identical.
 
+**Annotated view** (`--annotate`, additive on top of either mode above — `internal/cli.FormatAnnotated`): rather than two separate trees (Config, then Explain, matched up by hand), folds them into one — the config's actual shape, each leaf followed by a trailing `# layer (repo@ref:path)` comment:
+
+```yaml
+port: 8080  # base (git@example.com/app.git@main:base.yaml)
+env: dev  # env-override
+server:
+  middlewares:  # computed
+    - auth
+    - ratelimit
+```
+
+Composable with `--key` (renders just that subtree or leaf, same as the raw modes above). The webui's Explain tab renders the same (Config, Explain) pair as an equivalent collapsible tree instead of text, colored per layer.
+
 ## 2.4 Static vs dynamic
 
 - **Static formats, primary**: YAML and JSON.

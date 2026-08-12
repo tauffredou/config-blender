@@ -58,7 +58,9 @@ ConfigMap → pod. Secrets (Vault) are a stated non-goal for now — not connect
   accumulated so far by earlier layers — see `starlark_layer.go`). Deliberately independent of the K8s
   controller, Recipe DB, and Git fetching; those are wired around it, not through it.
 - **`gitsource`** — fetches layer content from Git with auth (HTTP token, SSH); `internal/gitauth`
-  builds credentials from the environment, shared between the CLI and the controller.
+  builds credentials from the Git-source registry's stored `Auth` (`internal/gitsourcedb`) — the Recipe
+  DB is the only source of Git credentials, no environment fallback — shared between the CLI and the
+  controller.
 - **`recipedb`** — Recipe storage (bbolt), versioned Vault-KV-v2-style (`Put`/`GetVersion`/
   `ListVersions`/`Rollback`).
 - **`internal/recipesource`** — persistent Recipe+Git store used by both the CLI and the central service.

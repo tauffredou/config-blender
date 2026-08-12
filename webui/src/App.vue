@@ -16,14 +16,29 @@ import {
 } from "@/components/ui/dialog"
 import { api } from "@/lib/api"
 import type { RecipeSpec } from "@/lib/types"
-import { useToken } from "@/composables/useToken"
+import { useAuth } from "@/composables/useAuth"
 import RecipeSidebar from "@/components/RecipeSidebar.vue"
 import RecipeEditor from "@/components/RecipeEditor.vue"
 import RecipeHistory from "@/components/RecipeHistory.vue"
 import RecipeResolve from "@/components/RecipeResolve.vue"
 import SourcesAdmin from "@/components/SourcesAdmin.vue"
 
-const { token } = useToken()
+const { authenticated, checked, login, logout } = useAuth()
+const loginToken = ref("")
+const loggingIn = ref(false)
+
+async function submitLogin() {
+  if (!loginToken.value) return
+  loggingIn.value = true
+  try {
+    await login(loginToken.value)
+    loginToken.value = ""
+  } catch (e) {
+    toast.error("Échec de la connexion", { description: (e as Error).message })
+  } finally {
+    loggingIn.value = false
+  }
+}
 
 const recipes = ref<string[]>([])
 const currentName = ref<string | null>(null)
@@ -100,15 +115,27 @@ async function onRolledBack() {
   <div class="flex min-h-screen flex-col">
     <header class="flex items-center justify-between border-b bg-neutral-900 px-5 py-3 text-white">
       <h1 class="text-base font-semibold">configblender</h1>
-      <div class="flex items-center gap-2">
-        <Label for="token" class="text-xs text-neutral-300">Token d'écriture</Label>
-        <Input
-          id="token"
-          v-model="token"
-          type="password"
-          placeholder="requis pour enregistrer/rollback"
-          class="h-7 w-56 bg-neutral-800 text-white border-neutral-700"
-        />
+      <div v-if="checked" class="flex items-center gap-2">
+        <template v-if="authenticated">
+          <span class="text-xs text-neutral-300">Connecté(e)</span>
+          <Button variant="outline" size="sm" class="h-7 border-neutral-700 bg-neutral-800 text-white hover:bg-neutral-700" @click="logout">
+            Déconnexion
+          </Button>
+        </template>
+        <template v-else>
+          <Label for="login-token" class="text-xs text-neutral-300">Token d'écriture</Label>
+          <Input
+            id="login-token"
+            v-model="loginToken"
+            type="password"
+            placeholder="requis pour enregistrer/rollback"
+            class="h-7 w-56 bg-neutral-800 text-white border-neutral-700"
+            @keyup.enter="submitLogin"
+          />
+          <Button size="sm" class="h-7" :disabled="!loginToken || loggingIn" @click="submitLogin">
+            {{ loggingIn ? "…" : "Se connecter" }}
+          </Button>
+        </template>
       </div>
     </header>
 

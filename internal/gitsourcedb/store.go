@@ -1,13 +1,16 @@
 // Package gitsourcedb stores the registry of preconfigured Git sources
 // (docs/05-recipe-and-crd.md §5.2, docs/07-open-questions.md): a named
-// {name, repo URL} pair that a Recipe layer references instead of
-// embedding a raw repo URL directly. No credentials are stored here —
-// internal/gitauth resolves those live, per source, from the environment
-// (FromSources) — so this store only ever holds non-secret identity.
+// {name, repo URL, credentials} tuple that a Recipe layer references
+// instead of embedding a raw repo URL directly. Credentials, when set, are
+// stored alongside the source itself — internal/gitauth.FromSources always
+// resolves a fetch's credentials from here, never from the environment
+// (docs/04-kubernetes.md §4.1). Write-only from the API's perspective:
+// internal/centralserver's handlers never echo Auth back in a List/Get
+// response, only accept it on Put.
 //
 // Unlike recipedb, sources carry no version history: they're operational
-// config (which repos configblender is allowed to read from), not
-// something an operator audits or rolls back.
+// config (which repos configblender is allowed to read from, and with what
+// credentials), not something an operator audits or rolls back.
 package gitsourcedb
 
 import (
@@ -25,8 +28,31 @@ var sourcesBucket = []byte("gitsources")
 // GitSource is one registered Git repository, referenced by name from a
 // recipe.LayerSpec's LayerSource.SourceRef.
 type GitSource struct {
-	Name string `json:"name" yaml:"name"`
-	Repo string `json:"repo" yaml:"repo"`
+	Name string       `json:"name" yaml:"name"`
+	Repo string       `json:"repo" yaml:"repo"`
+	Auth *Credentials `json:"auth,omitempty" yaml:"auth,omitempty"`
+}
+
+// Credentials authenticates Git operations (clone/fetch) against Repo — an
+// operational secret belonging to configblender itself, distinct from the
+// application config/secrets a Recipe resolves (docs/04-kubernetes.md
+// §4.1). Exactly one of (Username+Password) or SSHKey is expected to be
+// set; if both are, Username+Password wins (same precedence configblender
+// has always used). Nil, or a zero Credentials, means unauthenticated
+// access.
+type Credentials struct {
+	// Username + Password authenticate over HTTPS. Password also holds a
+	// personal access token — GitHub/GitLab-style hosts accept a token as
+	// the password with any non-empty username.
+	Username string `json:"username,omitempty" yaml:"username,omitempty"`
+	Password string `json:"password,omitempty" yaml:"password,omitempty"`
+
+	// SSHKey (PEM-encoded, optionally passphrase-protected via
+	// SSHKeyPassphrase) authenticates over SSH (git@host:... URLs).
+	// SSHUser defaults to "git" when empty.
+	SSHKey           string `json:"sshKey,omitempty" yaml:"sshKey,omitempty"`
+	SSHUser          string `json:"sshUser,omitempty" yaml:"sshUser,omitempty"`
+	SSHKeyPassphrase string `json:"sshKeyPassphrase,omitempty" yaml:"sshKeyPassphrase,omitempty"`
 }
 
 // Store persists GitSource values, keyed by name.
@@ -141,20 +167,20 @@ func (s *Store) ResolveSource(name string) (string, error) {
 	return src.Repo, nil
 }
 
-// LookupByRepo reverse-looks-up a repo URL to the name of the source that
-// registered it, used by internal/gitauth.FromSources to find which
-// source's credentials apply to a given fetch. Bucket keys are names, not
-// URLs, so this is a linear scan — fine at the size (a handful of
-// registered repos) and cadence (one lookup per Git fetch) this runs at.
-func (s *Store) LookupByRepo(repoURL string) (name string, ok bool) {
+// LookupByRepo reverse-looks-up a repo URL to the source that registered
+// it, used by internal/gitauth.FromSources to find which source's stored
+// credentials apply to a given fetch. Bucket keys are names, not URLs, so
+// this is a linear scan — fine at the size (a handful of registered repos)
+// and cadence (one lookup per Git fetch) this runs at.
+func (s *Store) LookupByRepo(repoURL string) (*GitSource, bool) {
 	sources, err := s.List()
 	if err != nil {
-		return "", false
+		return nil, false
 	}
-	for _, src := range sources {
-		if src.Repo == repoURL {
-			return src.Name, true
+	for i := range sources {
+		if sources[i].Repo == repoURL {
+			return &sources[i], true
 		}
 	}
-	return "", false
+	return nil, false
 }

@@ -21,7 +21,7 @@ import {
 import { api } from "@/lib/api"
 import { diffLines, type DiffOp } from "@/lib/diff"
 import type { RecipeSpec, VersionEntry } from "@/lib/types"
-import { useToken } from "@/composables/useToken"
+import { useAuth } from "@/composables/useAuth"
 
 const props = defineProps<{
   name: string
@@ -32,7 +32,7 @@ const emit = defineEmits<{
   rolledBack: []
 }>()
 
-const { token } = useToken()
+const { authenticated } = useAuth()
 const versions = ref<VersionEntry[]>([])
 const diff = ref<DiffOp[] | null>(null)
 const diffFromVersion = ref<number | null>(null)
@@ -62,13 +62,13 @@ async function compareToLatest(version: number) {
 async function confirmRollback() {
   const version = confirmVersion.value
   if (version === null) return
-  if (!token.value) {
-    toast.error("Token d'écriture requis", { description: "Renseignez-le en haut à droite." })
+  if (!authenticated.value) {
+    toast.error("Connexion requise", { description: "Connectez-vous en haut à droite." })
     confirmVersion.value = null
     return
   }
   try {
-    await api.rollback(props.name, version, token.value)
+    await api.rollback(props.name, version)
     toast.success(`Rollback vers la version ${version} effectué.`)
     confirmVersion.value = null
     emit("rolledBack")

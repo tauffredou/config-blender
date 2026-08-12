@@ -111,3 +111,17 @@ func TestFetcher_UpdatesOnSubsequentFetch(t *testing.T) {
 		t.Errorf("Content (second) = %q, want %q (fetch should have picked up the new commit)", second, "port: 9090\n")
 	}
 }
+
+func TestTestConnection_Reachable(t *testing.T) {
+	repoDir := newTestRepo(t, "layers/base.yaml", "port: 8080\n")
+
+	if err := TestConnection(context.Background(), repoDir, nil); err != nil {
+		t.Errorf("TestConnection: %v, want nil (repo is reachable)", err)
+	}
+}
+
+func TestTestConnection_Unreachable(t *testing.T) {
+	if err := TestConnection(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"), nil); err == nil {
+		t.Fatal("TestConnection: expected an error for an unreachable repo, got nil")
+	}
+}

@@ -31,13 +31,14 @@ func SSHAuthMethod(user string, privateKeyPEM []byte, passphrase string) (transp
 // unauthenticated access) when a repo has no specific entry. This is
 // configblender's own operational credential set (distinct from
 // application config/secrets, docs/04-kubernetes.md §4.1) — how byRepo and
-// defaultAuth are populated (env vars, a mounted K8s Secret...) is up to
-// the caller (docs/07-open-questions.md).
+// defaultAuth are populated is up to the caller (internal/gitauth builds
+// its resolver from the Git-source registry instead of this map, but tests
+// and other simple callers can use this directly).
 func NewAuthMap(byRepo map[string]transport.AuthMethod, defaultAuth transport.AuthMethod) AuthResolver {
-	return func(repoURL string) transport.AuthMethod {
+	return func(repoURL string) (transport.AuthMethod, error) {
 		if auth, ok := byRepo[repoURL]; ok {
-			return auth
+			return auth, nil
 		}
-		return defaultAuth
+		return defaultAuth, nil
 	}
 }

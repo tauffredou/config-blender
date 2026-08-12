@@ -56,9 +56,9 @@ func WithLogger(l *slog.Logger) Option {
 
 // Open opens the bbolt file at dbPath — shared by the Recipe database and
 // the Git-source registry — and prepares a Git fetcher whose credentials
-// are resolved per registered source (internal/gitauth.FromSources): a
-// source with no per-source credentials in the environment falls back to
-// the single global credential, same as before this registry existed.
+// are resolved per registered source, always from the registry itself
+// (internal/gitauth.FromSources, docs/04-kubernetes.md §4.1) — never from
+// the environment.
 func Open(dbPath string, opts ...Option) (*Store, error) {
 	rawDB, err := bbolt.Open(dbPath, 0o600, nil)
 	if err != nil {
@@ -75,11 +75,7 @@ func Open(dbPath string, opts ...Option) (*Store, error) {
 		rawDB.Close()
 		return nil, err
 	}
-	auth, err := gitauth.FromSources(sources.LookupByRepo)
-	if err != nil {
-		rawDB.Close()
-		return nil, err
-	}
+	auth := gitauth.FromSources(sources.LookupByRepo)
 
 	s := &Store{
 		rawDB:   rawDB,
@@ -163,10 +159,10 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 }
 
 // PutSource registers or replaces the Git source addressed by name
-// (internal/gitsourcedb) — no credentials involved, just its identity
-// (name, repo URL); internal/gitauth.FromSources resolves that source's
-// credentials from the environment at fetch time. name is authoritative
-// over src.Name, same rule and same reason as Put.
+// (internal/gitsourcedb), including its credentials if src.Auth is set —
+// internal/gitauth.FromSources always resolves a fetch's credentials from
+// here (docs/04-kubernetes.md §4.1). name is authoritative over src.Name,
+// same rule and same reason as Put.
 func (s *Store) PutSource(ctx context.Context, name string, src *gitsourcedb.GitSource) error {
 	src.Name = name
 	if err := s.sources.Put(src); err != nil {
@@ -192,6 +188,23 @@ func (s *Store) DeleteSource(ctx context.Context, name string) error {
 		return err
 	}
 	s.log.InfoContext(ctx, "git source deleted", "source", name)
+	return nil
+}
+
+// TestSourceConnection checks that repo is reachable with auth (which may
+// be nil, for unauthenticated access) — used by the webui's Sources admin
+// screen to let an operator verify a repo URL and credentials, including
+// ones not yet saved, before committing them with PutSource. It never
+// touches the database: this is a pure connectivity/credential check.
+func (s *Store) TestSourceConnection(ctx context.Context, repo string, auth *gitsourcedb.Credentials) error {
+	method, err := gitauth.AuthMethod(auth)
+	if err != nil {
+		return err
+	}
+	if err := gitsource.TestConnection(ctx, repo, method); err != nil {
+		s.log.WarnContext(ctx, "git source connection test failed", "repo", repo, "error", err)
+		return err
+	}
 	return nil
 }
 

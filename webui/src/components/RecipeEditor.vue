@@ -9,7 +9,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import type { LayerSpec, RecipeSpec, SourceConfig } from "@/lib/types"
-import { useToken } from "@/composables/useToken"
+import { useAuth } from "@/composables/useAuth"
 
 const props = defineProps<{
   name: string
@@ -20,7 +20,7 @@ const emit = defineEmits<{
   saved: []
 }>()
 
-const { token } = useToken()
+const { authenticated } = useAuth()
 const mode = ref<"builder" | "json">("builder")
 const specDraft = ref<RecipeSpec>(cloneSpec(props.spec))
 const jsonText = ref(JSON.stringify(specDraft.value, null, 2))
@@ -100,14 +100,14 @@ async function save() {
   } else {
     spec = specDraft.value
   }
-  if (!token.value) {
-    toast.error("Token d'écriture requis", { description: "Renseignez-le en haut à droite." })
+  if (!authenticated.value) {
+    toast.error("Connexion requise", { description: "Connectez-vous en haut à droite." })
     return
   }
 
   saving.value = true
   try {
-    await api.putRecipe(props.name, spec, token.value)
+    await api.putRecipe(props.name, spec)
     toast.success(`Nouvelle version de « ${props.name} » enregistrée.`)
     emit("saved")
   } catch (e) {

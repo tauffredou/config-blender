@@ -43,8 +43,8 @@ Go module (`configblender`): resolution engine, Recipe → Git → database chai
 | `recipe` | `Recipe`/`Layer`/`MergeRule` types, declarative `Spec`/`LayerSpec` form + `Materialize` | Done, tested |
 | `resolve` | Resolution engine: layer merging, sandboxed Starlark execution, provenance with redirection to the Git source (`Provenance`) | Done, tested |
 | `gitsource` | Fetching layer content from Git + authentication (HTTP token, SSH) | Done, tested |
-| `internal/gitauth` | Building Git credentials from the environment; `FromEnv` (single global credential) and `FromSources` (per-registered-source, docs/07-open-questions.md) | Done, tested |
-| `internal/gitsourcedb` | Registry of preconfigured Git sources (`{name, repo}`, no credentials) that a layer references by name instead of an inline repo URL | Done, tested |
+| `internal/gitauth` | Building Git credentials from the Git-source registry's stored `Auth` (`FromSources`, per-registered-source, docs/07-open-questions.md) — the Recipe DB is the only source of credentials, no environment fallback | Done, tested |
+| `internal/gitsourcedb` | Registry of preconfigured Git sources (`{name, repo, auth}`) that a layer references by name instead of an inline repo URL | Done, tested |
 | `recipedb` | Recipe storage (bbolt), versioned Vault-KV-v2-style (`Put`/`GetVersion`/`ListVersions`/`Rollback`) | Done, tested |
 | `internal/recipesource` | Persistent Recipe+sources+Git store (one shared bbolt file), used by the CLI and the central service | Done, tested |
 | `internal/cli` + `cmd/configblender` | CLI binary `put`/`rollback`/`list`/`get`/`history`/`resolve`/`explain`/`source`, local (`--db`) or via the central service (`--central-url`) | Done, tested, validated end to end |

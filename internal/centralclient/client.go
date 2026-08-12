@@ -261,7 +261,7 @@ func (c *Client) ListSources(ctx context.Context) ([]gitsourcedb.GitSource, erro
 // central service — requires WithToken (docs/05-recipe-and-crd.md §5.3).
 // name is authoritative over src.Name, same rule as Put.
 func (c *Client) PutSource(ctx context.Context, name string, src *gitsourcedb.GitSource) error {
-	body, err := json.Marshal(centralapi.GitSource{Name: name, Repo: src.Repo})
+	body, err := json.Marshal(centralapi.GitSource{Name: name, Repo: src.Repo, Auth: toWireCredentials(src.Auth)})
 	if err != nil {
 		return fmt.Errorf("centralclient: encoding source %q: %w", name, err)
 	}
@@ -307,4 +307,56 @@ func (c *Client) DeleteSource(ctx context.Context, name string) error {
 		return fmt.Errorf("centralclient: deleting source %q: central service returned %d: %s", name, resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 	return nil
+}
+
+// TestSourceConnection checks that repo is reachable with auth (which may
+// be nil) via the central service — requires WithToken, same as PutSource.
+func (c *Client) TestSourceConnection(ctx context.Context, repo string, auth *gitsourcedb.Credentials) error {
+	body, err := json.Marshal(centralapi.TestConnectionRequest{Repo: repo, Auth: toWireCredentials(auth)})
+	if err != nil {
+		return fmt.Errorf("centralclient: encoding test-connection request for %q: %w", repo, err)
+	}
+	u := c.baseURL + centralapi.TestConnectionPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("centralclient: building request for %q: %w", repo, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("centralclient: calling central service: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("centralclient: testing connection to %q: central service returned %d: %s", repo, resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	var result centralapi.TestConnectionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("centralclient: decoding test-connection response for %q: %w", repo, err)
+	}
+	if !result.Ok {
+		return fmt.Errorf("centralclient: connection test for %q failed: %s", repo, result.Error)
+	}
+	return nil
+}
+
+// toWireCredentials converts stored credentials to the API's wire format —
+// kept as separate types (gitsourcedb.Credentials vs
+// internal/centralapi.Credentials) so this client doesn't couple the wire
+// format directly to the storage layer's.
+func toWireCredentials(c *gitsourcedb.Credentials) *centralapi.Credentials {
+	if c == nil {
+		return nil
+	}
+	return &centralapi.Credentials{
+		Username:         c.Username,
+		Password:         c.Password,
+		SSHKey:           c.SSHKey,
+		SSHUser:          c.SSHUser,
+		SSHKeyPassphrase: c.SSHKeyPassphrase,
+	}
 }

@@ -108,13 +108,14 @@ func ListRecipeVersions(dbPath, centralURL, recipeName string) ([]recipedb.Versi
 	return store.ListVersions(context.Background(), recipeName)
 }
 
-// SourceStore is what `source list`/`source put`/`source delete` need —
-// satisfied by a local internal/recipesource.Store (sharing the same
-// bbolt file as Recipes) or a remote internal/centralclient.Client.
+// SourceStore is what `source list`/`source put`/`source delete`/`source
+// test` need — satisfied by a local internal/recipesource.Store (sharing
+// the same bbolt file as Recipes) or a remote internal/centralclient.Client.
 type SourceStore interface {
 	ListSources(ctx context.Context) ([]gitsourcedb.GitSource, error)
 	PutSource(ctx context.Context, name string, src *gitsourcedb.GitSource) error
 	DeleteSource(ctx context.Context, name string) error
+	TestSourceConnection(ctx context.Context, repo string, auth *gitsourcedb.Credentials) error
 }
 
 // openSourceStore opens exactly one of a local Recipe database (dbPath —
@@ -170,6 +171,20 @@ func DeleteSource(dbPath, centralURL, name string) error {
 	defer closeStore()
 
 	return store.DeleteSource(context.Background(), name)
+}
+
+// TestSourceConnection checks that repo is reachable with auth (which may
+// be nil, for unauthenticated access), against a local database or the
+// central service — used by `configblender source test`, and independent
+// of whether repo/auth are actually registered as a source yet.
+func TestSourceConnection(dbPath, centralURL, repo string, auth *gitsourcedb.Credentials) error {
+	store, closeStore, err := openSourceStore(dbPath, centralURL)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+
+	return store.TestSourceConnection(context.Background(), repo, auth)
 }
 
 // LookupPath descends a dot-separated key path (e.g. "server.middlewares")

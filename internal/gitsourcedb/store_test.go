@@ -35,6 +35,43 @@ func TestStore_PutGet(t *testing.T) {
 	}
 }
 
+func TestStore_PutGet_RoundTripsCredentials(t *testing.T) {
+	s := openTestStore(t)
+
+	src := &gitsourcedb.GitSource{
+		Name: "internal-configs",
+		Repo: "https://example.invalid/config.git",
+		Auth: &gitsourcedb.Credentials{Username: "x-access-token", Password: "s3cr3t"},
+	}
+	if err := s.Put(src); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	got, err := s.Get("internal-configs")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Auth == nil || got.Auth.Username != "x-access-token" || got.Auth.Password != "s3cr3t" {
+		t.Errorf("Get: Auth = %+v, want the stored credential", got.Auth)
+	}
+}
+
+func TestStore_PutGet_NoCredentialsStoresNilAuth(t *testing.T) {
+	s := openTestStore(t)
+
+	if err := s.Put(&gitsourcedb.GitSource{Name: "public-repo", Repo: "https://example.invalid/public.git"}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	got, err := s.Get("public-repo")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Auth != nil {
+		t.Errorf("Get: Auth = %+v, want nil (no credentials stored)", got.Auth)
+	}
+}
+
 func TestStore_Put_RequiresNameAndRepo(t *testing.T) {
 	s := openTestStore(t)
 
@@ -119,9 +156,9 @@ func TestStore_LookupByRepo(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	name, ok := s.LookupByRepo("https://example.invalid/a.git")
-	if !ok || name != "a" {
-		t.Errorf("LookupByRepo: got (%q, %v), want (%q, true)", name, ok, "a")
+	src, ok := s.LookupByRepo("https://example.invalid/a.git")
+	if !ok || src.Name != "a" {
+		t.Errorf("LookupByRepo: got (%+v, %v), want (name=%q, true)", src, ok, "a")
 	}
 
 	if _, ok := s.LookupByRepo("https://example.invalid/unknown.git"); ok {

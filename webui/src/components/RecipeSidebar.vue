@@ -5,12 +5,15 @@ defineProps<{
   recipes: string[]
   current: string | null
   sourcesActive: boolean
+  usersActive?: boolean
+  canManageUsers?: boolean
 }>()
 
 const emit = defineEmits<{
   select: [name: string]
   create: []
   openSources: []
+  openUsers: []
 }>()
 </script>
 
@@ -41,6 +44,16 @@ const emit = defineEmits<{
       @click="emit('openSources')"
     >
       ⚙ Sources Git
+    </button>
+
+    <button
+      v-if="canManageUsers"
+      type="button"
+      class="w-full cursor-pointer rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-muted"
+      :class="{ 'bg-muted font-medium': usersActive }"
+      @click="emit('openUsers')"
+    >
+      👤 Utilisateurs
     </button>
   </aside>
 </template>

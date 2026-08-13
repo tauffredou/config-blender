@@ -22,17 +22,31 @@ import RecipeEditor from "@/components/RecipeEditor.vue"
 import RecipeHistory from "@/components/RecipeHistory.vue"
 import RecipeResolve from "@/components/RecipeResolve.vue"
 import SourcesAdmin from "@/components/SourcesAdmin.vue"
+import UsersAdmin from "@/components/UsersAdmin.vue"
 
-const { authenticated, checked, login, logout } = useAuth()
+const { authenticated, checked, username, role, hasRole, login, logout } = useAuth()
+const loginMode = ref<"account" | "token">("account")
+const loginUsername = ref("")
+const loginPassword = ref("")
 const loginToken = ref("")
 const loggingIn = ref(false)
 
+function toggleLoginMode() {
+  loginMode.value = loginMode.value === "account" ? "token" : "account"
+}
+
 async function submitLogin() {
-  if (!loginToken.value) return
+  if (loginMode.value === "token" ? !loginToken.value : !loginUsername.value || !loginPassword.value) return
   loggingIn.value = true
   try {
-    await login(loginToken.value)
-    loginToken.value = ""
+    if (loginMode.value === "token") {
+      await login({ token: loginToken.value })
+      loginToken.value = ""
+    } else {
+      await login({ username: loginUsername.value, password: loginPassword.value })
+      loginUsername.value = ""
+      loginPassword.value = ""
+    }
   } catch (e) {
     toast.error("Échec de la connexion", { description: (e as Error).message })
   } finally {
@@ -46,6 +60,7 @@ const currentSpec = ref<RecipeSpec | null>(null)
 const activeTab = ref("edit")
 const isNew = ref(false)
 const sourcesActive = ref(false)
+const usersActive = ref(false)
 
 const newRecipeOpen = ref(false)
 const newRecipeName = ref("")
@@ -64,10 +79,17 @@ loadRecipes()
 
 function openSources() {
   sourcesActive.value = true
+  usersActive.value = false
+}
+
+function openUsers() {
+  usersActive.value = true
+  sourcesActive.value = false
 }
 
 async function selectRecipe(name: string) {
   sourcesActive.value = false
+  usersActive.value = false
   isNew.value = false
   currentName.value = name
   activeTab.value = "edit"
@@ -93,6 +115,7 @@ function confirmCreateRecipe() {
   }
   isNew.value = true
   sourcesActive.value = false
+  usersActive.value = false
   currentName.value = name
   currentSpec.value = { name, layers: [], mergePolicy: [] }
   activeTab.value = "edit"
@@ -117,10 +140,33 @@ async function onRolledBack() {
       <h1 class="text-base font-semibold">configblender</h1>
       <div v-if="checked" class="flex items-center gap-2">
         <template v-if="authenticated">
-          <span class="text-xs text-neutral-300">Connecté(e)</span>
+          <span class="text-xs text-neutral-300">{{ username }} ({{ role }})</span>
           <Button variant="outline" size="sm" class="h-7 border-neutral-700 bg-neutral-800 text-white hover:bg-neutral-700" @click="logout">
             Déconnexion
           </Button>
+        </template>
+        <template v-else-if="loginMode === 'account'">
+          <Label for="login-username" class="text-xs text-neutral-300">Utilisateur</Label>
+          <Input
+            id="login-username"
+            v-model="loginUsername"
+            placeholder="nom d'utilisateur"
+            class="h-7 w-36 bg-neutral-800 text-white border-neutral-700"
+            @keyup.enter="submitLogin"
+          />
+          <Input
+            v-model="loginPassword"
+            type="password"
+            placeholder="mot de passe"
+            class="h-7 w-36 bg-neutral-800 text-white border-neutral-700"
+            @keyup.enter="submitLogin"
+          />
+          <Button size="sm" class="h-7" :disabled="!loginUsername || !loginPassword || loggingIn" @click="submitLogin">
+            {{ loggingIn ? "…" : "Se connecter" }}
+          </Button>
+          <button type="button" class="text-xs text-neutral-400 underline hover:text-neutral-200" @click="toggleLoginMode">
+            Utiliser un token
+          </button>
         </template>
         <template v-else>
           <Label for="login-token" class="text-xs text-neutral-300">Token d'écriture</Label>
@@ -128,13 +174,16 @@ async function onRolledBack() {
             id="login-token"
             v-model="loginToken"
             type="password"
-            placeholder="requis pour enregistrer/rollback"
+            placeholder="token de secours"
             class="h-7 w-56 bg-neutral-800 text-white border-neutral-700"
             @keyup.enter="submitLogin"
           />
           <Button size="sm" class="h-7" :disabled="!loginToken || loggingIn" @click="submitLogin">
             {{ loggingIn ? "…" : "Se connecter" }}
           </Button>
+          <button type="button" class="text-xs text-neutral-400 underline hover:text-neutral-200" @click="toggleLoginMode">
+            Utiliser un compte
+          </button>
         </template>
       </div>
     </header>
@@ -144,13 +193,17 @@ async function onRolledBack() {
         :recipes="recipes"
         :current="currentName"
         :sources-active="sourcesActive"
+        :users-active="usersActive"
+        :can-manage-users="hasRole('admin')"
         @select="selectRecipe"
         @create="openCreateDialog"
         @open-sources="openSources"
+        @open-users="openUsers"
       />
 
       <main class="flex-1 p-6">
         <SourcesAdmin v-if="sourcesActive" />
+        <UsersAdmin v-else-if="usersActive" />
 
         <template v-else>
           <p v-if="!hasSelection" class="text-sm text-muted-foreground">

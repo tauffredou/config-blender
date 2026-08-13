@@ -76,3 +76,15 @@ export interface ResolveResponse {
   config: Record<string, unknown>
   explain: Record<string, unknown>
 }
+
+// Role mirrors the Go role enum (internal/userdb): three flat values, no
+// hierarchy except that the backend implicitly grants "admin" every check
+// that any other role satisfies — every allowed-role list in this UI must
+// include "admin" itself, mirroring the backend's route table.
+export type Role = "admin" | "source-manager" | "contributor"
+
+export interface User {
+  username: string
+  role: Role
+  createdAt: string
+}

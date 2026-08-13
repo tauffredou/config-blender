@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from "vue"
+import { computed, ref, watch } from "vue"
 import { toast } from "vue-sonner"
 import { Button } from "@/components/ui/button"
 import {
@@ -32,7 +32,8 @@ const emit = defineEmits<{
   rolledBack: []
 }>()
 
-const { authenticated } = useAuth()
+const { hasRole } = useAuth()
+const canWrite = computed(() => hasRole("admin", "contributor"))
 const versions = ref<VersionEntry[]>([])
 const diff = ref<DiffOp[] | null>(null)
 const diffFromVersion = ref<number | null>(null)
@@ -62,8 +63,8 @@ async function compareToLatest(version: number) {
 async function confirmRollback() {
   const version = confirmVersion.value
   if (version === null) return
-  if (!authenticated.value) {
-    toast.error("Connexion requise", { description: "Connectez-vous en haut à droite." })
+  if (!canWrite.value) {
+    toast.error("Accès refusé", { description: "Rôle admin ou contributor requis." })
     confirmVersion.value = null
     return
   }
@@ -97,7 +98,7 @@ async function confirmRollback() {
             <Button variant="secondary" size="sm" @click="compareToLatest(v.version)">
               Comparer à la dernière
             </Button>
-            <Button variant="destructive" size="sm" @click="confirmVersion = v.version">
+            <Button variant="destructive" size="sm" :disabled="!canWrite" @click="confirmVersion = v.version">
               Rollback
             </Button>
           </TableCell>

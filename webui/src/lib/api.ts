@@ -5,7 +5,7 @@
 // sends it automatically on every same-origin request after that (default
 // `credentials: "same-origin"`), so no call here attaches an
 // Authorization header itself (docs/07-open-questions.md).
-import type { RecipeSpec, VersionEntry, ResolveResponse, SourceConfig, Credentials } from "./types"
+import type { RecipeSpec, VersionEntry, ResolveResponse, SourceConfig, Credentials, Role, User } from "./types"
 
 class ApiError extends Error {}
 
@@ -62,9 +62,22 @@ export const api = {
   testConnection: (repo: string, auth: Credentials | undefined) =>
     requestJSON<{ ok: boolean; error?: string }>("/v1/sources/test", "POST", { repo, auth }),
 
-  login: (token: string) => requestJSON<void>("/v1/login", "POST", { token }),
+  // login accepts either a registered account (username/password) or the
+  // shared break-glass token — both resolve to the same session cookie.
+  login: (credentials: { token: string } | { username: string; password: string }) =>
+    requestJSON<{ authenticated: boolean; username?: string; role?: Role }>("/v1/login", "POST", credentials),
 
   logout: () => request<void>("/v1/logout", { method: "POST" }),
 
-  getSession: () => request<{ authenticated: boolean }>("/v1/session"),
+  getSession: () => request<{ authenticated: boolean; username?: string; role?: Role }>("/v1/session"),
+
+  listUsers: () => request<{ users: User[] }>("/v1/users"),
+
+  createUser: (username: string, password: string, role: Role) =>
+    requestJSON<void>("/v1/users", "POST", { username, password, role }),
+
+  updateUser: (username: string, changes: { role?: Role; password?: string }) =>
+    requestJSON<void>(`/v1/users/${encodeURIComponent(username)}`, "PUT", changes),
+
+  deleteUser: (username: string) => request<void>(`/v1/users/${encodeURIComponent(username)}`, { method: "DELETE" }),
 }

@@ -13,9 +13,11 @@ package centralserver
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -24,6 +26,7 @@ import (
 	"configblender/internal/centralapi"
 	"configblender/internal/gitsourcedb"
 	"configblender/internal/recipesource"
+	"configblender/internal/userdb"
 	"configblender/recipe"
 	"configblender/recipedb"
 	"configblender/resolve"
@@ -43,17 +46,26 @@ type Store interface {
 	PutSource(ctx context.Context, name string, src *gitsourcedb.GitSource) error
 	DeleteSource(ctx context.Context, name string) error
 	TestSourceConnection(ctx context.Context, repo string, auth *gitsourcedb.Credentials) error
+	CreateUser(ctx context.Context, username, password string, role userdb.Role) error
+	ListUsers(ctx context.Context) ([]userdb.User, error)
+	SetUserRole(ctx context.Context, username string, role userdb.Role) error
+	SetUserPassword(ctx context.Context, username, password string) error
+	DeleteUser(ctx context.Context, username string) error
+	VerifyUser(ctx context.Context, username, password string) (userdb.Role, error)
+	UserRole(ctx context.Context, username string) (userdb.Role, error)
+	SessionSecret(ctx context.Context) ([]byte, error)
 	Ping() error
 }
 
 // Server exposes Store over HTTP, plus the embedded UI (ui.go). Reads are
-// unauthenticated; writes (PUT recipe, rollback) require the write token,
-// presented either as `Authorization: Bearer <writeToken>` (API/CLI
-// clients) or a session cookie obtained from POST centralapi.LoginPath
-// (the webui, docs/07-open-questions.md — this reopens the earlier
-// "GitOps only, no API push" decision, deliberately, in exchange for the
-// UI's edit/rollback flow: only the Recipe *structure* is affected, layer
-// *content* stays Git-sourced and PR-reviewable regardless).
+// unauthenticated; writes are role-gated (internal/userdb.Role) behind an
+// identity presented either as `Authorization: Bearer <writeToken>`
+// (API/CLI clients, always treated as RoleAdmin) or a session cookie
+// obtained from POST centralapi.LoginPath (the webui, docs/07-open-questions.md
+// — this reopens the earlier "GitOps only, no API push" decision,
+// deliberately, in exchange for the UI's edit/rollback flow: only the
+// Recipe *structure* is affected, layer *content* stays Git-sourced and
+// PR-reviewable regardless).
 type Server struct {
 	store      Store
 	writeToken string
@@ -71,31 +83,47 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Server) { s.log = l }
 }
 
-// New builds a Server. writeToken gates the write endpoints (PUT/rollback)
-// via `Authorization: Bearer <writeToken>` or a session cookie from POST
-// centralapi.LoginPath; an empty writeToken disables writes entirely (they
-// 403) rather than defaulting to open.
+// New builds a Server. writeToken, when set, acts as a break-glass
+// RoleAdmin identity via `Authorization: Bearer <writeToken>` or a session
+// cookie from POST centralapi.LoginPath — independent of, and in addition
+// to, per-user accounts (internal/userdb) authenticated the same two ways.
+// An empty writeToken simply disables that break-glass path; user accounts
+// still work.
 func New(store Store, writeToken string, opts ...Option) *Server {
-	s := &Server{store: store, writeToken: writeToken, session: newSessionSigner(writeToken), log: slog.Default(), metrics: newMetrics()}
+	s := &Server{store: store, writeToken: writeToken, log: slog.Default(), metrics: newMetrics()}
 	for _, opt := range opts {
 		opt(s)
 	}
+	secret, err := store.SessionSecret(context.Background())
+	if err != nil {
+		// Sessions still work within this process — the signer just gets
+		// a random in-memory key — but won't survive a restart. Worth a
+		// startup log, not worth failing to start over.
+		s.log.Error("could not load persisted session secret, sessions will not survive a restart", "error", err)
+		secret = make([]byte, 32)
+		_, _ = cryptorand.Read(secret)
+	}
+	s.session = newSessionSigner(secret)
 	return s
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+centralapi.ResolvePath, s.handleResolve)
-	mux.HandleFunc("PUT "+centralapi.RecipesPath+"/{name}", s.requireToken(s.handlePutRecipe))
-	mux.HandleFunc("POST "+centralapi.RecipesPath+"/{name}/rollback", s.requireToken(s.handleRollback))
+	mux.HandleFunc("PUT "+centralapi.RecipesPath+"/{name}", s.requireRole(userdb.RoleAdmin, userdb.RoleContributor)(s.handlePutRecipe))
+	mux.HandleFunc("POST "+centralapi.RecipesPath+"/{name}/rollback", s.requireRole(userdb.RoleAdmin, userdb.RoleContributor)(s.handleRollback))
 	mux.HandleFunc("GET "+centralapi.RecipesPath+"/{name}", s.handleGetRecipe)
 	mux.HandleFunc("GET "+centralapi.RecipesPath+"/{name}/versions/{version}", s.handleGetRecipeVersion)
 	mux.HandleFunc("GET "+centralapi.RecipesPath+"/{name}/versions", s.handleListVersions)
 	mux.HandleFunc("GET "+centralapi.RecipesPath, s.handleListRecipes)
-	mux.HandleFunc("PUT "+centralapi.SourcesPath+"/{name}", s.requireToken(s.handlePutSource))
-	mux.HandleFunc("DELETE "+centralapi.SourcesPath+"/{name}", s.requireToken(s.handleDeleteSource))
+	mux.HandleFunc("PUT "+centralapi.SourcesPath+"/{name}", s.requireRole(userdb.RoleAdmin, userdb.RoleSourceManager)(s.handlePutSource))
+	mux.HandleFunc("DELETE "+centralapi.SourcesPath+"/{name}", s.requireRole(userdb.RoleAdmin, userdb.RoleSourceManager)(s.handleDeleteSource))
 	mux.HandleFunc("GET "+centralapi.SourcesPath, s.handleListSources)
-	mux.HandleFunc("POST "+centralapi.TestConnectionPath, s.requireToken(s.handleTestConnection))
+	mux.HandleFunc("POST "+centralapi.TestConnectionPath, s.requireRole(userdb.RoleAdmin, userdb.RoleSourceManager)(s.handleTestConnection))
+	mux.HandleFunc("GET "+centralapi.UsersPath, s.requireRole(userdb.RoleAdmin)(s.handleListUsers))
+	mux.HandleFunc("POST "+centralapi.UsersPath, s.requireRole(userdb.RoleAdmin)(s.handleCreateUser))
+	mux.HandleFunc("PUT "+centralapi.UsersPath+"/{username}", s.requireRole(userdb.RoleAdmin)(s.handleUpdateUser))
+	mux.HandleFunc("DELETE "+centralapi.UsersPath+"/{username}", s.requireRole(userdb.RoleAdmin)(s.handleDeleteUser))
 	mux.HandleFunc("POST "+centralapi.LoginPath, s.handleLogin)
 	mux.HandleFunc("POST "+centralapi.LogoutPath, s.handleLogout)
 	mux.HandleFunc("GET "+centralapi.SessionPath, s.handleSession)
@@ -108,59 +136,103 @@ func (s *Server) Handler() http.Handler {
 	return s.withMiddleware(mux)
 }
 
-// requireToken gates a write handler behind the configured write token,
-// presented either as a bearer token (API/CLI clients) or a session cookie
-// (the webui, issued by handleLogin) — either is sufficient. Constant-time
-// comparison avoids leaking the token through response-time side channels.
-func (s *Server) requireToken(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if s.writeToken == "" {
-			http.Error(w, "write API disabled: no token configured", http.StatusForbidden)
-			return
+// identity is the caller a request authenticated as: either a registered
+// user (Subject = their username, Role from internal/userdb, looked up
+// fresh on every request rather than trusted from the session cookie —
+// see authenticate) or the break-glass write token (Subject = "token",
+// Role = RoleAdmin always).
+type identity struct {
+	subject string
+	role    userdb.Role
+}
+
+// authenticate resolves the caller's identity from a session cookie or a
+// bearer token, in that order; the zero identity and false if neither is
+// present or valid.
+func (s *Server) authenticate(r *http.Request) (identity, bool) {
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		if subject, ok := s.session.valid(cookie.Value); ok {
+			if subject == "" {
+				return identity{subject: "token", role: userdb.RoleAdmin}, true
+			}
+			// Re-check against live data, not a role baked into the
+			// cookie at login time: a role change or account deletion
+			// takes effect on the very next request instead of waiting
+			// out the session's multi-day TTL.
+			if role, err := s.store.UserRole(r.Context(), subject); err == nil {
+				return identity{subject: subject, role: role}, true
+			}
 		}
-		if s.hasValidSession(r) {
-			next(w, r)
-			return
-		}
+	}
+	if s.writeToken != "" {
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(s.writeToken)) != 1 {
-			http.Error(w, "invalid or missing bearer token", http.StatusUnauthorized)
-			return
+		if got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(s.writeToken)) == 1 {
+			return identity{subject: "token", role: userdb.RoleAdmin}, true
 		}
-		next(w, r)
+	}
+	return identity{}, false
+}
+
+// requireRole gates a handler behind the caller authenticating as one of
+// roles — 401 if unauthenticated, 403 if authenticated as a role that
+// isn't allowed.
+func (s *Server) requireRole(roles ...userdb.Role) func(http.HandlerFunc) http.HandlerFunc {
+	allowed := make(map[userdb.Role]bool, len(roles))
+	for _, role := range roles {
+		allowed[role] = true
+	}
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			id, ok := s.authenticate(r)
+			if !ok {
+				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if !allowed[id.role] {
+				http.Error(w, fmt.Sprintf("role %q is not permitted to perform this action", id.role), http.StatusForbidden)
+				return
+			}
+			next(w, r)
+		}
 	}
 }
 
-func (s *Server) hasValidSession(r *http.Request) bool {
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil {
-		return false
-	}
-	return s.session.valid(cookie.Value)
-}
-
-// handleLogin exchanges the write token for a session cookie, so the
-// webui doesn't need to attach `Authorization: Bearer` to every write
-// request itself — the browser sends the cookie automatically on
-// same-origin requests. Constant-time comparison, same as requireToken.
+// handleLogin authenticates either a registered user (Username+Password,
+// checked against internal/userdb) or the break-glass write token (Token),
+// and on success sets a session cookie so the webui doesn't need to attach
+// `Authorization: Bearer` to every write request itself — the browser
+// sends the cookie automatically on same-origin requests.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if s.writeToken == "" {
-		http.Error(w, "write API disabled: no token configured", http.StatusForbidden)
-		return
-	}
 	var req centralapi.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "decoding request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.Token == "" || subtle.ConstantTimeCompare([]byte(req.Token), []byte(s.writeToken)) != 1 {
-		http.Error(w, "invalid token", http.StatusUnauthorized)
+
+	var subject string
+	var role userdb.Role
+	switch {
+	case req.Token != "":
+		if s.writeToken == "" || subtle.ConstantTimeCompare([]byte(req.Token), []byte(s.writeToken)) != 1 {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+		subject, role = "", userdb.RoleAdmin
+	case req.Username != "" && req.Password != "":
+		r2, err := s.store.VerifyUser(r.Context(), req.Username, req.Password)
+		if err != nil {
+			http.Error(w, "invalid username or password", http.StatusUnauthorized)
+			return
+		}
+		subject, role = req.Username, r2
+	default:
+		http.Error(w, "missing credentials: provide username+password or token", http.StatusBadRequest)
 		return
 	}
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
-		Value:    s.session.issue(),
+		Value:    s.session.issueFor(subject),
 		Path:     "/",
 		MaxAge:   int(sessionTTL.Seconds()),
 		HttpOnly: true,
@@ -172,12 +244,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// closes off CSRF via the cookie entirely.
 		SameSite: http.SameSiteStrictMode,
 	})
-	w.WriteHeader(http.StatusNoContent)
+	respondSession(w, subject, role, true)
 }
 
-// handleLogout clears the session cookie. The write token itself isn't
-// revocable short of redeploying with a new one (docs/07-open-questions.md);
-// this only ends the browser's session.
+// handleLogout clears the session cookie. The break-glass write token
+// itself isn't revocable short of redeploying with a new one
+// (docs/07-open-questions.md); this only ends the browser's session.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -191,12 +263,22 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleSession reports whether the request's session cookie is currently
-// valid, so the webui can render logged-in/logged-out state on load
-// without attempting a write and inferring auth state from its result.
+// handleSession reports the request's current identity (cookie or bearer
+// token), so the webui can render logged-in/logged-out state — and which
+// role it holds, to show/hide admin-only UI — on load, without attempting
+// a write and inferring auth state from its result.
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.authenticate(r)
+	respondSession(w, id.subject, id.role, ok)
+}
+
+func respondSession(w http.ResponseWriter, subject string, role userdb.Role, authenticated bool) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(centralapi.SessionResponse{Authenticated: s.hasValidSession(r)})
+	resp := centralapi.SessionResponse{Authenticated: authenticated}
+	if authenticated {
+		resp.Username, resp.Role = subject, string(role)
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 // writeError maps a service-layer error to an HTTP response: ErrNotFound
@@ -412,6 +494,105 @@ func (s *Server) handleDeleteSource(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 
 	if err := s.store.DeleteSource(r.Context(), name); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := s.store.ListUsers(r.Context())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	out := make([]centralapi.User, len(users))
+	for i, u := range users {
+		out[i] = centralapi.User{Username: u.Username, Role: string(u.Role), CreatedAt: u.CreatedAt}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(centralapi.ListUsersResponse{Users: out})
+}
+
+func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	var req centralapi.CreateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "decoding request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	role := userdb.Role(req.Role)
+	if !role.Valid() {
+		http.Error(w, fmt.Sprintf("invalid role %q", req.Role), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.CreateUser(r.Context(), req.Username, req.Password, role); err != nil {
+		if errors.Is(err, userdb.ErrAlreadyExists) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if errors.Is(err, userdb.ErrInvalidInput) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+
+	var req centralapi.UpdateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "decoding request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Role == "" && req.Password == "" {
+		http.Error(w, "nothing to update: set role and/or password", http.StatusBadRequest)
+		return
+	}
+
+	if req.Role != "" {
+		role := userdb.Role(req.Role)
+		if !role.Valid() {
+			http.Error(w, fmt.Sprintf("invalid role %q", req.Role), http.StatusBadRequest)
+			return
+		}
+		if err := s.store.SetUserRole(r.Context(), username, role); err != nil {
+			if errors.Is(err, userdb.ErrNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			s.writeError(w, r, err)
+			return
+		}
+	}
+	if req.Password != "" {
+		if err := s.store.SetUserPassword(r.Context(), username, req.Password); err != nil {
+			if errors.Is(err, userdb.ErrNotFound) {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			s.writeError(w, r, err)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+
+	if id, ok := s.authenticate(r); ok && id.subject == username {
+		http.Error(w, "cannot delete your own account while logged in as it", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.DeleteUser(r.Context(), username); err != nil {
 		s.writeError(w, r, err)
 		return
 	}

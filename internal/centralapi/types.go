@@ -12,29 +12,80 @@ const ResolvePath = "/v1/resolve"
 
 // LoginPath, LogoutPath and SessionPath implement session-based auth for
 // the webui (docs/07-open-questions.md — "UI authentication beyond a
-// single shared token"): still one shared secret
-// (CONFIGBLENDER_WRITE_TOKEN), but the browser proves it once via POST
-// LoginPath rather than attaching it to every write request. API/CLI
-// callers (internal/centralclient) are unaffected — the `Authorization:
-// Bearer` header still works exactly as before; the session cookie is a
-// second, additional way to satisfy the same write-token gate.
-//   - POST LoginPath   — {token} -> sets a session cookie, or 401
+// single shared token"): the browser proves its identity once via POST
+// LoginPath, either as a registered user (Username+Password, checked
+// against internal/userdb, role-gated per UsersPath below) or as the
+// break-glass CONFIGBLENDER_WRITE_TOKEN (Token, always treated as
+// RoleAdmin) — either issues the same kind of session cookie. API/CLI
+// callers (internal/centralclient) are unaffected: the `Authorization:
+// Bearer <writeToken>` header still works exactly as before and is always
+// treated as RoleAdmin too; the session cookie is an additional way for
+// the webui to authenticate without attaching that header to every write
+// request.
+//   - POST LoginPath   — {username,password} or {token} -> sets a session cookie, or 401
 //   - POST LogoutPath  — clears the session cookie
-//   - GET  SessionPath — {authenticated: bool}, reflects the request's cookie
+//   - GET  SessionPath — reflects the request's cookie/bearer identity
 const (
 	LoginPath   = "/v1/login"
 	LogoutPath  = "/v1/logout"
 	SessionPath = "/v1/session"
 )
 
-// LoginRequest is the JSON body of POST LoginPath.
+// LoginRequest is the JSON body of POST LoginPath — exactly one of
+// (Username+Password) or Token is expected to be set.
 type LoginRequest struct {
-	Token string `json:"token"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	Token    string `json:"token,omitempty"`
 }
 
-// SessionResponse is the JSON body of a successful GET SessionPath call.
+// SessionResponse is the JSON body of a successful GET SessionPath call,
+// and of a successful POST LoginPath. Username and Role are empty when
+// Authenticated is false, or when the session was established via the
+// break-glass write token rather than a registered user (Username is then
+// "token", Role is "admin").
 type SessionResponse struct {
-	Authenticated bool `json:"authenticated"`
+	Authenticated bool   `json:"authenticated"`
+	Username      string `json:"username,omitempty"`
+	Role          string `json:"role,omitempty"`
+}
+
+// UsersPath is the base path for managing configblender's own user
+// accounts (docs/07-open-questions.md — roles gate write endpoints:
+// RoleAdmin/RoleSourceManager/RoleContributor in internal/userdb). Every
+// endpoint here is RoleAdmin-only.
+//   - GET    UsersPath              — list accounts (ListUsersResponse), never including passwords
+//   - POST   UsersPath              — create an account (CreateUserRequest)
+//   - PUT    UsersPath/{username}   — change role and/or password (UpdateUserRequest)
+//   - DELETE UsersPath/{username}   — remove an account
+const UsersPath = "/v1/users"
+
+// User is the wire form of a registered account — never includes a
+// password or password hash.
+type User struct {
+	Username  string    `json:"username"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// ListUsersResponse is the JSON body of a successful GET UsersPath call.
+type ListUsersResponse struct {
+	Users []User `json:"users"`
+}
+
+// CreateUserRequest is the JSON body of POST UsersPath.
+type CreateUserRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Role     string `json:"role"`
+}
+
+// UpdateUserRequest is the JSON body of PUT UsersPath/{username}. Role and
+// Password are each optional — set whichever should change; an empty
+// Password leaves the account's password unchanged.
+type UpdateUserRequest struct {
+	Role     string `json:"role,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 // RecipesPath is the base path for consulting Recipes, including their

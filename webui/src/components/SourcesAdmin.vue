@@ -18,7 +18,7 @@ import { api } from "@/lib/api"
 import type { Credentials, SourceConfig } from "@/lib/types"
 import { useAuth } from "@/composables/useAuth"
 
-const { authenticated } = useAuth()
+const { hasRole } = useAuth()
 const sources = ref<SourceConfig[]>([])
 const loading = ref(false)
 
@@ -52,6 +52,7 @@ function currentAuth(): Credentials | undefined {
 }
 
 const canTest = computed(() => newRepo.value.trim().length > 0)
+const canWrite = computed(() => hasRole("admin", "source-manager"))
 
 function clearCredentialFields() {
   newUsername.value = ""
@@ -75,8 +76,8 @@ async function load() {
 load()
 
 function requireAuth(): boolean {
-  if (authenticated.value) return true
-  toast.error("Connexion requise", { description: "Connectez-vous en haut à droite." })
+  if (hasRole("admin", "source-manager")) return true
+  toast.error("Accès refusé", { description: "Rôle admin ou source-manager requis." })
   return false
 }
 
@@ -158,7 +159,7 @@ async function remove(name: string) {
           <TableCell class="font-mono text-xs">{{ src.name }}</TableCell>
           <TableCell class="font-mono text-xs text-muted-foreground">{{ src.repo }}</TableCell>
           <TableCell class="text-right">
-            <Button variant="destructive" size="sm" @click="remove(src.name)">Supprimer</Button>
+            <Button variant="destructive" size="sm" :disabled="!canWrite" @click="remove(src.name)">Supprimer</Button>
           </TableCell>
         </TableRow>
         <TableRow v-if="!loading && sources.length === 0">
@@ -233,10 +234,10 @@ async function remove(name: string) {
       </div>
 
       <div class="flex justify-end gap-2">
-        <Button variant="outline" :disabled="!canTest || testing" @click="test">
+        <Button variant="outline" :disabled="!canTest || !canWrite || testing" @click="test">
           {{ testing ? "Test en cours…" : "Tester la connexion" }}
         </Button>
-        <Button :disabled="adding" @click="add">
+        <Button :disabled="!canWrite || adding" @click="add">
           {{ adding ? "Ajout…" : "Ajouter" }}
         </Button>
       </div>

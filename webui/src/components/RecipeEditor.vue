@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from "vue"
+import { computed, ref, watch } from "vue"
 import { toast } from "vue-sonner"
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "@lucide/vue"
 import { Button } from "@/components/ui/button"
@@ -20,7 +20,8 @@ const emit = defineEmits<{
   saved: []
 }>()
 
-const { authenticated } = useAuth()
+const { hasRole } = useAuth()
+const canWrite = computed(() => hasRole("admin", "contributor"))
 const mode = ref<"builder" | "json">("builder")
 const specDraft = ref<RecipeSpec>(cloneSpec(props.spec))
 const jsonText = ref(JSON.stringify(specDraft.value, null, 2))
@@ -100,8 +101,8 @@ async function save() {
   } else {
     spec = specDraft.value
   }
-  if (!authenticated.value) {
-    toast.error("Connexion requise", { description: "Connectez-vous en haut à droite." })
+  if (!canWrite.value) {
+    toast.error("Accès refusé", { description: "Rôle admin ou contributor requis." })
     return
   }
 
@@ -215,7 +216,7 @@ async function save() {
 
     <Textarea v-else v-model="jsonText" spellcheck="false" class="h-[26rem] font-mono text-xs" />
 
-    <Button :disabled="saving" @click="save">
+    <Button :disabled="!canWrite || saving" @click="save">
       {{ saving ? "Enregistrement…" : "Enregistrer (nouvelle version)" }}
     </Button>
   </div>

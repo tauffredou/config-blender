@@ -17,48 +17,60 @@ const sessionCookieName = "cb_session"
 const sessionTTL = 7 * 24 * time.Hour
 
 // sessionSigner issues and verifies session-cookie values without any
-// server-side session store: a cookie is just an expiry timestamp plus an
-// HMAC over it, keyed by a hash of the server's own write token. Anyone
-// who can produce a valid cookie already had to know the write token (the
-// same credential the Authorization header has always required) — a
-// restart doesn't invalidate outstanding sessions, since the key is
-// derived from the (stable, operator-configured) write token rather than
-// generated fresh per process.
+// server-side session store: a cookie is a subject (a username, or ""
+// for the break-glass write-token identity — server.go's authenticate)
+// plus an expiry timestamp, HMACed with a random secret persisted in the
+// Recipe database (recipesource.Store.SessionSecret). Persisted rather
+// than derived from the write token (as an earlier version of this did):
+// with real per-user accounts, sessions must stay unforgeable even when
+// no write token is configured at all.
 type sessionSigner struct {
 	key []byte
 }
 
-func newSessionSigner(writeToken string) *sessionSigner {
-	key := sha256.Sum256([]byte("configblender-session-v1:" + writeToken))
+func newSessionSigner(secret []byte) *sessionSigner {
+	key := sha256.Sum256(append([]byte("configblender-session-v1:"), secret...))
 	return &sessionSigner{key: key[:]}
 }
 
-// issue returns a new, currently-valid signed cookie value.
-func (s *sessionSigner) issue() string {
-	return s.sign(time.Now().Add(sessionTTL).Unix())
+// issueFor returns a new, currently-valid signed cookie value naming
+// subject as the session's identity.
+func (s *sessionSigner) issueFor(subject string) string {
+	return s.sign(subject, time.Now().Add(sessionTTL).Unix())
 }
 
-func (s *sessionSigner) sign(expiresAt int64) string {
-	payload := strconv.FormatInt(expiresAt, 10)
+func (s *sessionSigner) sign(subject string, expiresAt int64) string {
+	payload := subject + "|" + strconv.FormatInt(expiresAt, 10)
 	mac := hmac.New(sha256.New, s.key)
 	mac.Write([]byte(payload))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return payload + "." + sig
 }
 
-// valid reports whether v is a cookie this signer issued, and not expired.
-func (s *sessionSigner) valid(v string) bool {
+// valid reports whether v is a cookie this signer issued, and not expired,
+// returning the subject it was issued for (userdb usernames can't contain
+// "|" — enforced by userdb.Store.Create — so splitting on the last "|"
+// before the signature separator is unambiguous).
+func (s *sessionSigner) valid(v string) (subject string, ok bool) {
 	payload, _, ok := strings.Cut(v, ".")
 	if !ok {
-		return false
+		return "", false
 	}
-	expiresAt, err := strconv.ParseInt(payload, 10, 64)
+	idx := strings.LastIndex(payload, "|")
+	if idx < 0 {
+		return "", false
+	}
+	subject, expiresRaw := payload[:idx], payload[idx+1:]
+	expiresAt, err := strconv.ParseInt(expiresRaw, 10, 64)
 	if err != nil {
-		return false
+		return "", false
 	}
 	if time.Now().Unix() >= expiresAt {
-		return false
+		return "", false
 	}
-	want := s.sign(expiresAt)
-	return subtle.ConstantTimeCompare([]byte(v), []byte(want)) == 1
+	want := s.sign(subject, expiresAt)
+	if subtle.ConstantTimeCompare([]byte(v), []byte(want)) != 1 {
+		return "", false
+	}
+	return subject, true
 }

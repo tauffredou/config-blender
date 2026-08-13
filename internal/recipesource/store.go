@@ -17,6 +17,7 @@ package recipesource
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,6 +27,7 @@ import (
 	"configblender/gitsource"
 	"configblender/internal/gitauth"
 	"configblender/internal/gitsourcedb"
+	"configblender/internal/userdb"
 	"configblender/recipe"
 	"configblender/recipedb"
 	"configblender/resolve"
@@ -37,10 +39,18 @@ import (
 // errors.Is still works since it's the same sentinel underneath.
 var ErrNotFound = recipedb.ErrNotFound
 
+// metaBucket holds small, single-value operational state that doesn't
+// belong to any one domain store — currently just the session-signing
+// secret (SessionSecret).
+var metaBucket = []byte("meta")
+
+var sessionSecretKey = []byte("session-secret")
+
 type Store struct {
 	rawDB   *bbolt.DB
 	db      *recipedb.Store
 	sources *gitsourcedb.Store
+	users   *userdb.Store
 	fetcher *gitsource.Fetcher
 	log     *slog.Logger
 }
@@ -75,12 +85,25 @@ func Open(dbPath string, opts ...Option) (*Store, error) {
 		rawDB.Close()
 		return nil, err
 	}
+	users, err := userdb.NewStore(rawDB)
+	if err != nil {
+		rawDB.Close()
+		return nil, err
+	}
+	if err := rawDB.Update(func(tx *bbolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists(metaBucket)
+		return err
+	}); err != nil {
+		rawDB.Close()
+		return nil, fmt.Errorf("recipesource: initializing meta bucket: %w", err)
+	}
 	auth := gitauth.FromSources(sources.LookupByRepo)
 
 	s := &Store{
 		rawDB:   rawDB,
 		db:      db,
 		sources: sources,
+		users:   users,
 		fetcher: gitsource.NewFetcher(auth),
 		log:     slog.Default(),
 	}
@@ -98,6 +121,33 @@ func (s *Store) Close() error {
 // to call from an HTTP readiness probe.
 func (s *Store) Ping() error {
 	return s.rawDB.View(func(tx *bbolt.Tx) error { return nil })
+}
+
+// SessionSecret returns the random key internal/centralserver signs
+// session cookies with, generating and persisting one on first call if
+// none exists yet. Persisted (rather than generated fresh per process) so
+// restarting the central service doesn't log out every browser session;
+// unlike the write token, this secret is never operator-supplied, so a
+// session stays unforgeable even when CONFIGBLENDER_WRITE_TOKEN is unset.
+func (s *Store) SessionSecret(ctx context.Context) ([]byte, error) {
+	var secret []byte
+	err := s.rawDB.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(metaBucket)
+		if v := b.Get(sessionSecretKey); v != nil {
+			secret = append([]byte(nil), v...)
+			return nil
+		}
+		generated := make([]byte, 32)
+		if _, err := rand.Read(generated); err != nil {
+			return fmt.Errorf("generating session secret: %w", err)
+		}
+		if err := b.Put(sessionSecretKey, generated); err != nil {
+			return err
+		}
+		secret = generated
+		return nil
+	})
+	return secret, err
 }
 
 // Put creates or replaces the Recipe spec addressed by name, recording it as
@@ -206,6 +256,68 @@ func (s *Store) TestSourceConnection(ctx context.Context, repo string, auth *git
 		return err
 	}
 	return nil
+}
+
+// CreateUser registers a new account with the given role
+// (internal/userdb.Role) — admin-only over the API
+// (internal/centralserver's requireRole).
+func (s *Store) CreateUser(ctx context.Context, username, password string, role userdb.Role) error {
+	if err := s.users.Create(username, password, role); err != nil {
+		return err
+	}
+	s.log.InfoContext(ctx, "user created", "username", username, "role", role)
+	return nil
+}
+
+// ListUsers returns every registered account (without password hashes).
+func (s *Store) ListUsers(ctx context.Context) ([]userdb.User, error) {
+	return s.users.List()
+}
+
+// SetUserRole changes username's role.
+func (s *Store) SetUserRole(ctx context.Context, username string, role userdb.Role) error {
+	if err := s.users.SetRole(username, role); err != nil {
+		return err
+	}
+	s.log.InfoContext(ctx, "user role changed", "username", username, "role", role)
+	return nil
+}
+
+// SetUserPassword changes username's password.
+func (s *Store) SetUserPassword(ctx context.Context, username, password string) error {
+	if err := s.users.SetPassword(username, password); err != nil {
+		return err
+	}
+	s.log.InfoContext(ctx, "user password changed", "username", username)
+	return nil
+}
+
+// DeleteUser removes the account named username.
+func (s *Store) DeleteUser(ctx context.Context, username string) error {
+	if err := s.users.Delete(username); err != nil {
+		return err
+	}
+	s.log.InfoContext(ctx, "user deleted", "username", username)
+	return nil
+}
+
+// VerifyUser checks a login attempt, returning the account's role on
+// success.
+func (s *Store) VerifyUser(ctx context.Context, username, password string) (userdb.Role, error) {
+	return s.users.Verify(username, password)
+}
+
+// UserRole returns username's current role — used on every authenticated
+// request (not just at login) so a role change or account deletion takes
+// effect immediately rather than waiting out the session's TTL.
+func (s *Store) UserRole(ctx context.Context, username string) (userdb.Role, error) {
+	return s.users.Role(username)
+}
+
+// CountUsers returns the number of registered accounts — cmd/server uses
+// this at startup to decide whether to bootstrap an initial admin.
+func (s *Store) CountUsers(ctx context.Context) (int, error) {
+	return s.users.Count()
 }
 
 // Resolve loads the named Recipe, materializes its layers from Git, and

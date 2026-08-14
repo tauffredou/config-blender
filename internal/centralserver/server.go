@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 
+	"configblender/internal/authz"
 	"configblender/internal/centralapi"
 	"configblender/internal/gitsourcedb"
 	"configblender/internal/recipesource"
@@ -30,6 +31,19 @@ import (
 	"configblender/recipedb"
 	"configblender/resolve"
 )
+
+// policy is the one Rego-evaluated authorization decision for every write
+// endpoint (internal/authz), compiled once from an embedded, static
+// policy.rego — a compile failure here means policy.rego itself doesn't
+// parse, a programming error caught by the package's own tests, not a
+// runtime condition callers of New need to handle.
+var policy = func() *authz.Authorizer {
+	a, err := authz.New(context.Background())
+	if err != nil {
+		panic(err)
+	}
+	return a
+}()
 
 // Store is what the server needs from the underlying Recipe store —
 // satisfied by *internal/recipesource.Store.
@@ -108,22 +122,22 @@ func New(store Store, opts ...Option) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+centralapi.ResolvePath, s.handleResolve)
-	mux.HandleFunc("PUT "+centralapi.RecipesPath+"/{name}", s.requireRole(userdb.RoleAdmin, userdb.RoleContributor)(s.handlePutRecipe))
-	mux.HandleFunc("POST "+centralapi.RecipesPath+"/{name}/rollback", s.requireRole(userdb.RoleAdmin, userdb.RoleContributor)(s.handleRollback))
+	mux.HandleFunc("PUT "+centralapi.RecipesPath+"/{name}", s.requireAction(authz.ActionRecipesWrite)(s.handlePutRecipe))
+	mux.HandleFunc("POST "+centralapi.RecipesPath+"/{name}/rollback", s.requireAction(authz.ActionRecipesWrite)(s.handleRollback))
 	mux.HandleFunc("GET "+centralapi.RecipesPath+"/{name}", s.handleGetRecipe)
 	mux.HandleFunc("GET "+centralapi.RecipesPath+"/{name}/versions/{version}", s.handleGetRecipeVersion)
 	mux.HandleFunc("GET "+centralapi.RecipesPath+"/{name}/versions", s.handleListVersions)
 	mux.HandleFunc("GET "+centralapi.RecipesPath, s.handleListRecipes)
-	mux.HandleFunc("PUT "+centralapi.SourcesPath+"/{name}", s.requireRole(userdb.RoleAdmin, userdb.RoleSourceManager)(s.handlePutSource))
-	mux.HandleFunc("DELETE "+centralapi.SourcesPath+"/{name}", s.requireRole(userdb.RoleAdmin, userdb.RoleSourceManager)(s.handleDeleteSource))
+	mux.HandleFunc("PUT "+centralapi.SourcesPath+"/{name}", s.requireAction(authz.ActionSourcesWrite)(s.handlePutSource))
+	mux.HandleFunc("DELETE "+centralapi.SourcesPath+"/{name}", s.requireAction(authz.ActionSourcesWrite)(s.handleDeleteSource))
 	mux.HandleFunc("GET "+centralapi.SourcesPath, s.handleListSources)
-	mux.HandleFunc("POST "+centralapi.TestConnectionPath, s.requireRole(userdb.RoleAdmin, userdb.RoleSourceManager)(s.handleTestConnection))
-	mux.HandleFunc("GET "+centralapi.UsersPath, s.requireRole(userdb.RoleAdmin)(s.handleListUsers))
-	mux.HandleFunc("POST "+centralapi.UsersPath, s.requireRole(userdb.RoleAdmin)(s.handleCreateUser))
-	mux.HandleFunc("PUT "+centralapi.UsersPath+"/{username}", s.requireRole(userdb.RoleAdmin)(s.handleUpdateUser))
-	mux.HandleFunc("DELETE "+centralapi.UsersPath+"/{username}", s.requireRole(userdb.RoleAdmin)(s.handleDeleteUser))
-	mux.HandleFunc("POST "+centralapi.ServiceAccountsPath, s.requireRole(userdb.RoleAdmin)(s.handleCreateServiceAccount))
-	mux.HandleFunc("POST "+centralapi.ServiceAccountsPath+"/{username}/rotate", s.requireRole(userdb.RoleAdmin)(s.handleRotateServiceAccountKey))
+	mux.HandleFunc("POST "+centralapi.TestConnectionPath, s.requireAction(authz.ActionSourcesWrite)(s.handleTestConnection))
+	mux.HandleFunc("GET "+centralapi.UsersPath, s.requireAction(authz.ActionUsersManage)(s.handleListUsers))
+	mux.HandleFunc("POST "+centralapi.UsersPath, s.requireAction(authz.ActionUsersManage)(s.handleCreateUser))
+	mux.HandleFunc("PUT "+centralapi.UsersPath+"/{username}", s.requireAction(authz.ActionUsersManage)(s.handleUpdateUser))
+	mux.HandleFunc("DELETE "+centralapi.UsersPath+"/{username}", s.requireAction(authz.ActionUsersManage)(s.handleDeleteUser))
+	mux.HandleFunc("POST "+centralapi.ServiceAccountsPath, s.requireAction(authz.ActionUsersManage)(s.handleCreateServiceAccount))
+	mux.HandleFunc("POST "+centralapi.ServiceAccountsPath+"/{username}/rotate", s.requireAction(authz.ActionUsersManage)(s.handleRotateServiceAccountKey))
 	mux.HandleFunc("POST "+centralapi.LoginPath, s.handleLogin)
 	mux.HandleFunc("POST "+centralapi.LogoutPath, s.handleLogout)
 	mux.HandleFunc("GET "+centralapi.SessionPath, s.handleSession)
@@ -172,14 +186,12 @@ func (s *Server) authenticate(r *http.Request) (identity, bool) {
 	return identity{}, false
 }
 
-// requireRole gates a handler behind the caller authenticating as one of
-// roles — 401 if unauthenticated, 403 if authenticated as a role that
-// isn't allowed.
-func (s *Server) requireRole(roles ...userdb.Role) func(http.HandlerFunc) http.HandlerFunc {
-	allowed := make(map[userdb.Role]bool, len(roles))
-	for _, role := range roles {
-		allowed[role] = true
-	}
+// requireAction gates a handler behind the caller's role being permitted to
+// perform action, per policy (internal/authz, policy.rego) — 401 if
+// unauthenticated, 403 if authenticated as a role the policy denies for
+// this action. The permission grants themselves live in policy.rego, not
+// here: this function only asks the question, it doesn't answer it.
+func (s *Server) requireAction(action authz.Action) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			id, ok := s.authenticate(r)
@@ -187,7 +199,12 @@ func (s *Server) requireRole(roles ...userdb.Role) func(http.HandlerFunc) http.H
 				http.Error(w, "authentication required", http.StatusUnauthorized)
 				return
 			}
-			if !allowed[id.role] {
+			allowed, err := policy.Allowed(r.Context(), id.role, action)
+			if err != nil {
+				s.writeError(w, r, err)
+				return
+			}
+			if !allowed {
 				http.Error(w, fmt.Sprintf("role %q is not permitted to perform this action", id.role), http.StatusForbidden)
 				return
 			}

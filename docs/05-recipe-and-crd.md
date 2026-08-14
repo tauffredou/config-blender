@@ -66,6 +66,8 @@ On the central-service side, these same reads are exposed over HTTP (`internal/c
 - `contributor` — Recipes (`PUT /v1/recipes/{name}`, `POST /v1/recipes/{name}/rollback`).
 - `read` — no write endpoint at all. Reads are already unauthenticated (5.3bis above), so today this role's only effect is giving its holder an identity distinct from anonymous in access logs; it's the natural default for a service account minted just to call `/v1/resolve`, and it's ready for a future where reads themselves become gated.
 
+These grants live in `internal/authz/policy.rego` (5.3quater below), not in a Go map — this list documents current behavior, not the source of truth for it.
+
 Two account kinds share this same store, keyed by username, and the same role vocabulary — `internal/userdb.Kind`:
 
 - **human** (`{username, bcrypt password hash, role, createdAt}`) — logs in via `POST /v1/login` with `{username, password}` for a session cookie, same as before.
@@ -76,6 +78,16 @@ Two account kinds share this same store, keyed by username, and the same role vo
 **Bootstrap**: `cmd/server` creates one initial human admin account at startup if the account store is completely empty — from `CONFIGBLENDER_ADMIN_USER` (default `admin`) / `CONFIGBLENDER_ADMIN_PASSWORD` (a random password is generated and logged once if unset) — otherwise there'd be no way to reach the admin-only `POST /v1/users` endpoint at all on a brand-new deployment. A no-op on every later restart once at least one account exists.
 
 **What this doesn't resolve yet**: writes still aren't attributed in version history itself (`recipedb.VersionInfo` records *when*, not *who* — the acting username is known to the HTTP layer at request time via the session or API key, but not yet threaded into the stored version metadata); a service account's key has no TTL/expiry, only manual rotation; see [07-open-questions.md](07-open-questions.md).
+
+### 5.3quater Policy engine (OPA)
+
+**What changed**: the role→permission grants above used to be a Go map built inline in each route registration (`internal/centralserver`'s old `requireRole(roles ...userdb.Role)`, one call per endpoint). They now live in `internal/authz/policy.rego`, a Rego policy evaluated in-process via OPA's Go SDK (`github.com/open-policy-agent/opa/rego`) — no separate OPA server or sidecar, no network hop: `internal/authz.New` compiles the embedded policy once at package init, and `Authorizer.Allowed(ctx, role, action)` evaluates it per request. `internal/centralserver.requireAction(action)` replaces `requireRole`: it asks the same 401-vs-403 question as before (unauthenticated vs. authenticated-but-not-permitted), but the *answer* comes from the policy, not a hardcoded set.
+
+`input` to the policy is `{role, action}` — `role` is the caller's `internal/userdb.Role` (resolved the same way regardless of auth method, 5.3bis), `action` is one of `internal/authz`'s constants (`recipes:write`, `sources:write`, `users:manage`), one per write surface, matching the endpoint groupings above one for one. `admin` is granted via a single blanket rule (`allow if input.role == "admin"`) rather than repeated per action, preserving the "no hierarchy beyond admin implicitly satisfying every check" invariant from 5.3ter.
+
+**Why**: the goal is the same one RBAC model — human accounts, service accounts, and (previously) the break-glass token all asking "may this role do this?" through one path — stated explicitly as a design goal now that the grants are data (a policy file) rather than code scattered across route registrations: reviewing or changing who can do what is a `policy.rego` diff, not a Go change requiring a rebuild to reason about.
+
+**Still open**: the policy is static (embedded at build time, `//go:embed policy.rego`) — there's no live reload or per-deployment override yet; `internal/authz.Authorizer.Allowed`'s only failure mode today is a policy evaluation error (treated as a 500, `writeError`), since the embedded policy itself is a build-time invariant covered by `internal/authz`'s own tests, not something a request can make fail.
 
 ## 5.4 CRD proposal (v1alpha1)
 

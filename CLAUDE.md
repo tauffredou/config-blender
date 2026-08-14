@@ -73,7 +73,9 @@ ConfigMap → pod. Secrets (Vault) are a stated non-goal for now — not connect
   role-gated writes: accounts (`internal/userdb`, role one of `admin`/`source-manager`/`contributor`/
   `read`) — human (username/password, session cookie) or service (API key, `Authorization: Bearer`
   per request, no session — the Vault-token idiom for CI/scripts). No shared break-glass credential;
-  every identity is a named account. Embeds the built webui.
+  every identity is a named account. Which role may do what is decided by `internal/authz` — a Rego
+  policy (`policy.rego`) evaluated in-process via OPA's Go SDK, not a hardcoded Go map. Embeds the
+  built webui.
 - **`internal/cli`** + **`cmd/configblender`** — CLI (`put`/`rollback`/`list`/`get`/`history`/`resolve`/
   `explain`), usable against a local DB (`--db`) or the central service (`--central-url`).
 - **`webui/`** — Vue 3 + shadcn-vue UI (Vault-like): Recipe list, editor, history/diff, rollback,

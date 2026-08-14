@@ -135,56 +135,78 @@ async function onRolledBack() {
 
 <template>
   <Toaster position="top-right" />
-  <div class="flex min-h-screen flex-col">
-    <header class="flex items-center justify-between border-b bg-neutral-900 px-5 py-3 text-white">
-      <h1 class="text-base font-semibold">configblender</h1>
-      <div v-if="checked" class="flex items-center gap-2">
-        <template v-if="authenticated">
-          <span class="text-xs text-neutral-300">{{ username }} ({{ role }})</span>
-          <Button variant="outline" size="sm" class="h-7 border-neutral-700 bg-neutral-800 text-white hover:bg-neutral-700" @click="logout">
-            Déconnexion
-          </Button>
-        </template>
-        <template v-else-if="loginMode === 'account'">
+
+  <div v-if="!checked" class="flex min-h-screen items-center justify-center text-sm text-muted-foreground">
+    Chargement…
+  </div>
+
+  <div v-else-if="!authenticated" class="flex min-h-screen items-center justify-center bg-neutral-950 p-6">
+    <div class="w-full max-w-sm space-y-5 rounded-lg border border-neutral-800 bg-neutral-900 p-6 text-white">
+      <div>
+        <h1 class="text-lg font-semibold">configblender</h1>
+        <p class="mt-1 text-xs text-neutral-400">Connectez-vous pour continuer.</p>
+      </div>
+
+      <div v-if="loginMode === 'account'" class="space-y-3">
+        <div class="space-y-1.5">
           <Label for="login-username" class="text-xs text-neutral-300">Utilisateur</Label>
           <Input
             id="login-username"
             v-model="loginUsername"
             placeholder="nom d'utilisateur"
-            class="h-7 w-36 bg-neutral-800 text-white border-neutral-700"
+            class="bg-neutral-800 text-white border-neutral-700"
             @keyup.enter="submitLogin"
           />
+        </div>
+        <div class="space-y-1.5">
+          <Label for="login-password" class="text-xs text-neutral-300">Mot de passe</Label>
           <Input
+            id="login-password"
             v-model="loginPassword"
             type="password"
             placeholder="mot de passe"
-            class="h-7 w-36 bg-neutral-800 text-white border-neutral-700"
+            class="bg-neutral-800 text-white border-neutral-700"
             @keyup.enter="submitLogin"
           />
-          <Button size="sm" class="h-7" :disabled="!loginUsername || !loginPassword || loggingIn" @click="submitLogin">
-            {{ loggingIn ? "…" : "Se connecter" }}
-          </Button>
-          <button type="button" class="text-xs text-neutral-400 underline hover:text-neutral-200" @click="toggleLoginMode">
-            Utiliser un token
-          </button>
-        </template>
-        <template v-else>
+        </div>
+        <Button class="w-full" :disabled="!loginUsername || !loginPassword || loggingIn" @click="submitLogin">
+          {{ loggingIn ? "Connexion…" : "Se connecter" }}
+        </Button>
+        <button type="button" class="text-xs text-neutral-400 underline hover:text-neutral-200" @click="toggleLoginMode">
+          Utiliser un token
+        </button>
+      </div>
+
+      <div v-else class="space-y-3">
+        <div class="space-y-1.5">
           <Label for="login-token" class="text-xs text-neutral-300">Token d'écriture</Label>
           <Input
             id="login-token"
             v-model="loginToken"
             type="password"
             placeholder="token de secours"
-            class="h-7 w-56 bg-neutral-800 text-white border-neutral-700"
+            class="bg-neutral-800 text-white border-neutral-700"
             @keyup.enter="submitLogin"
           />
-          <Button size="sm" class="h-7" :disabled="!loginToken || loggingIn" @click="submitLogin">
-            {{ loggingIn ? "…" : "Se connecter" }}
-          </Button>
-          <button type="button" class="text-xs text-neutral-400 underline hover:text-neutral-200" @click="toggleLoginMode">
-            Utiliser un compte
-          </button>
-        </template>
+        </div>
+        <Button class="w-full" :disabled="!loginToken || loggingIn" @click="submitLogin">
+          {{ loggingIn ? "Connexion…" : "Se connecter" }}
+        </Button>
+        <button type="button" class="text-xs text-neutral-400 underline hover:text-neutral-200" @click="toggleLoginMode">
+          Utiliser un compte
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div v-else class="flex min-h-screen flex-col">
+    <header class="flex items-center justify-between border-b bg-neutral-900 px-5 py-3 text-white">
+      <h1 class="text-base font-semibold">configblender</h1>
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-neutral-300">{{ username }} ({{ role }})</span>
+        <Button variant="outline" size="sm" class="h-7 border-neutral-700 bg-neutral-800 text-white hover:bg-neutral-700" @click="logout">
+          Déconnexion
+        </Button>
       </div>
     </header>
 

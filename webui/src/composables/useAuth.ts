@@ -4,9 +4,9 @@ import type { Role } from "@/lib/types"
 
 // Module-level singleton, shared across every component that imports it —
 // whether the browser currently holds a valid session cookie (issued by
-// POST /v1/login, docs/07-open-questions.md: session auth over the same
-// shared write token, so the webui doesn't need to attach a bearer header
-// to every write request itself).
+// POST /v1/login for a registered human account, docs/07-open-questions.md),
+// so the webui doesn't need to attach a bearer header to every write
+// request itself.
 const authenticated = ref(false)
 const checked = ref(false)
 const username = ref<string | null>(null)
@@ -27,7 +27,7 @@ async function refresh() {
   }
 }
 
-async function login(credentials: { token: string } | { username: string; password: string }) {
+async function login(credentials: { username: string; password: string }) {
   const session = await api.login(credentials) // throws ApiError on bad credentials; caller shows it
   authenticated.value = true
   username.value = session.username ?? null

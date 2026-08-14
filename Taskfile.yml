@@ -75,10 +75,11 @@ tasks:
       - task: test
 
   dev:server:
-    desc: Run the central service locally against a scratch Recipe DB (writes enabled, token "devtoken")
+    desc: Run the central service locally against a scratch Recipe DB (bootstrap admin "admin"/"devpassword")
     deps: [webui:build]
     env:
-      CONFIGBLENDER_WRITE_TOKEN: devtoken
+      CONFIGBLENDER_ADMIN_USER: admin
+      CONFIGBLENDER_ADMIN_PASSWORD: devpassword
     cmds:
       - mkdir -p /tmp/configblender-dev
       - go run ./cmd/server --recipe-db /tmp/configblender-dev/recipes.db --addr :8091

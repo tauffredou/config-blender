@@ -62,9 +62,10 @@ export const api = {
   testConnection: (repo: string, auth: Credentials | undefined) =>
     requestJSON<{ ok: boolean; error?: string }>("/v1/sources/test", "POST", { repo, auth }),
 
-  // login accepts either a registered account (username/password) or the
-  // shared break-glass token — both resolve to the same session cookie.
-  login: (credentials: { token: string } | { username: string; password: string }) =>
+  // login authenticates a registered human account, resolving to a session
+  // cookie. A service account never logs in here — it authenticates with
+  // its API key directly (Authorization: Bearer) on every request instead.
+  login: (credentials: { username: string; password: string }) =>
     requestJSON<{ authenticated: boolean; username?: string; role?: Role }>("/v1/login", "POST", credentials),
 
   logout: () => request<void>("/v1/logout", { method: "POST" }),

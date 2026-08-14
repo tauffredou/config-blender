@@ -15,6 +15,7 @@ import (
 	"configblender/internal/centralserver"
 	"configblender/internal/gitsourcedb"
 	"configblender/internal/recipesource"
+	"configblender/internal/userdb"
 	"configblender/recipe"
 )
 
@@ -45,7 +46,11 @@ func newTestRepo(t *testing.T) string {
 	return dir
 }
 
-const testWriteToken = "test-token"
+// testAPIKey is the bearer credential for the admin service account
+// newTestServer creates fresh (with a new random key) on every call — a
+// package var rather than a return value since none of these tests run in
+// parallel and most don't need it at all.
+var testAPIKey string
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -59,6 +64,11 @@ func newTestServer(t *testing.T) *httptest.Server {
 	t.Cleanup(func() { store.Close() })
 
 	ctx := context.Background()
+	key, err := store.CreateServiceAccount(ctx, "test-client", userdb.RoleAdmin)
+	if err != nil {
+		t.Fatalf("CreateServiceAccount: %v", err)
+	}
+	testAPIKey = key
 	if err := store.PutSource(ctx, "repo", &gitsourcedb.GitSource{Repo: repoDir}); err != nil {
 		t.Fatalf("PutSource: %v", err)
 	}
@@ -78,7 +88,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 		t.Fatalf("Put (v2): %v", err)
 	}
 
-	srv := httptest.NewServer(centralserver.New(store, testWriteToken).Handler())
+	srv := httptest.NewServer(centralserver.New(store).Handler())
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -205,7 +215,7 @@ func TestClient_GetVersion_Unknown(t *testing.T) {
 
 func TestClient_Put(t *testing.T) {
 	srv := newTestServer(t)
-	client := centralclient.New(srv.URL, nil).WithToken(testWriteToken)
+	client := centralclient.New(srv.URL, nil).WithToken(testAPIKey)
 
 	spec := &recipe.Spec{
 		Name: "my-app-recipe",
@@ -248,7 +258,7 @@ func TestClient_Put_WrongToken(t *testing.T) {
 
 func TestClient_Rollback(t *testing.T) {
 	srv := newTestServer(t)
-	client := centralclient.New(srv.URL, nil).WithToken(testWriteToken)
+	client := centralclient.New(srv.URL, nil).WithToken(testAPIKey)
 
 	if err := client.Rollback(context.Background(), "my-app-recipe", 1); err != nil {
 		t.Fatalf("Rollback: %v", err)
@@ -295,7 +305,7 @@ func TestClient_ListSources(t *testing.T) {
 
 func TestClient_PutSource(t *testing.T) {
 	srv := newTestServer(t)
-	client := centralclient.New(srv.URL, nil).WithToken(testWriteToken)
+	client := centralclient.New(srv.URL, nil).WithToken(testAPIKey)
 
 	if err := client.PutSource(context.Background(), "second", &gitsourcedb.GitSource{Repo: "https://example.invalid/second.git"}); err != nil {
 		t.Fatalf("PutSource: %v", err)
@@ -321,7 +331,7 @@ func TestClient_PutSource_WithoutToken(t *testing.T) {
 
 func TestClient_DeleteSource(t *testing.T) {
 	srv := newTestServer(t)
-	client := centralclient.New(srv.URL, nil).WithToken(testWriteToken)
+	client := centralclient.New(srv.URL, nil).WithToken(testAPIKey)
 
 	if err := client.DeleteSource(context.Background(), "repo"); err != nil {
 		t.Fatalf("DeleteSource: %v", err)

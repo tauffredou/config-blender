@@ -154,8 +154,8 @@ async function add() {
         Comptes nommés avec un rôle (admin, source-manager, contributor, read). Réservé aux
         administrateurs. Un compte humain se connecte par mot de passe (session) ; un compte de
         service s'authentifie avec une clé d'API envoyée en <code>Authorization: Bearer</code> à
-        chaque requête, sans session — même modèle de rôles pour les deux. Le token d'écriture
-        partagé reste disponible comme accès de secours ("token"), en dehors de cette liste.
+        chaque requête, sans session — même modèle de rôles pour les deux. Il n'existe aucun
+        identifiant partagé : chaque appel est attribué à un compte nommé.
       </p>
     </div>
 

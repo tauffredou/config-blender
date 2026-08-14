@@ -22,9 +22,10 @@ Key facts specific to this agent's scope:
 - Stack: Vue 3 (Composition API) + shadcn-vue components + Tailwind v4 + `@vueuse/core` + `vue-sonner`
   for toasts. Match existing component conventions in `webui/src` rather than introducing a new pattern.
 - The UI talks to the central service's HTTP API (`internal/centralserver`): `GET/PUT /v1/recipes/*`,
-  `POST /v1/recipes/{name}/rollback`, `GET /v1/resolve`. Write calls need
-  `Authorization: Bearer <token>` — `task dev:server` sets `CONFIGBLENDER_WRITE_TOKEN=devtoken` for local
-  testing.
+  `POST /v1/recipes/{name}/rollback`, `GET /v1/resolve`. Write calls need an authenticated identity — a
+  session cookie from `POST /v1/login` (the webui's own login form) or, for a machine caller,
+  `Authorization: Bearer <api-key>` from a service account. `task dev:server` bootstraps an admin
+  account `admin`/`devpassword` for local testing.
 - Don't touch Go files (`internal/`, `cmd/`, etc.) in this agent — hand that back to the go-backend agent.
 
 Run `npm run build` (type-checks via `vue-tsc -b` and builds) before considering frontend work done.

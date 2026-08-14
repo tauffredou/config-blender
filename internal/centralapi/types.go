@@ -13,16 +13,12 @@ const ResolvePath = "/v1/resolve"
 // LoginPath, LogoutPath and SessionPath implement session-based auth for
 // the webui (docs/07-open-questions.md — "UI authentication beyond a
 // single shared token"): the browser proves its identity once via POST
-// LoginPath, either as a registered user (Username+Password, checked
-// against internal/userdb, role-gated per UsersPath below) or as the
-// break-glass CONFIGBLENDER_WRITE_TOKEN (Token, always treated as
-// RoleAdmin) — either issues the same kind of session cookie. API/CLI
-// callers (internal/centralclient) are unaffected: the `Authorization:
-// Bearer <writeToken>` header still works exactly as before and is always
-// treated as RoleAdmin too; the session cookie is an additional way for
-// the webui to authenticate without attaching that header to every write
-// request.
-//   - POST LoginPath   — {username,password} or {token} -> sets a session cookie, or 401
+// LoginPath as a registered human account (Username+Password, checked
+// against internal/userdb, role-gated per UsersPath below), which issues a
+// session cookie. A service account never logs in here — see
+// ServiceAccountsPath — it authenticates with `Authorization: Bearer
+// <api-key>` directly, per request.
+//   - POST LoginPath   — {username,password} -> sets a session cookie, or 401
 //   - POST LogoutPath  — clears the session cookie
 //   - GET  SessionPath — reflects the request's cookie/bearer identity
 const (
@@ -31,19 +27,15 @@ const (
 	SessionPath = "/v1/session"
 )
 
-// LoginRequest is the JSON body of POST LoginPath — exactly one of
-// (Username+Password) or Token is expected to be set.
+// LoginRequest is the JSON body of POST LoginPath.
 type LoginRequest struct {
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
-	Token    string `json:"token,omitempty"`
 }
 
 // SessionResponse is the JSON body of a successful GET SessionPath call,
 // and of a successful POST LoginPath. Username and Role are empty when
-// Authenticated is false, or when the session was established via the
-// break-glass write token rather than a registered user (Username is then
-// "token", Role is "admin").
+// Authenticated is false.
 type SessionResponse struct {
 	Authenticated bool   `json:"authenticated"`
 	Username      string `json:"username,omitempty"`
@@ -173,9 +165,9 @@ type RollbackRequest struct {
 // (docs/07-open-questions.md — the preconfigured-source registry a Recipe
 // layer references by name instead of embedding a raw repo URL):
 //   - GET SourcesPath                — list registered sources (ListSourcesResponse), never including Auth
-//   - PUT SourcesPath/{name}         — register or replace a source, Auth included (write-token gated)
-//   - DELETE SourcesPath/{name}      — remove a source (write-token gated)
-//   - POST SourcesPath/test          — test connectivity to a repo/credential pair, saved or not (write-token gated)
+//   - PUT SourcesPath/{name}         — register or replace a source, Auth included (admin/source-manager only)
+//   - DELETE SourcesPath/{name}      — remove a source (admin/source-manager only)
+//   - POST SourcesPath/test          — test connectivity to a repo/credential pair, saved or not (admin/source-manager only)
 //
 // Unlike RecipesPath, there is no version history here — a source is
 // operational config (which repos configblender may read from, and with

@@ -23,7 +23,7 @@ just `task`) lists everything.
 - `task vet` — `go vet ./...`.
 - `task build` — builds `manager`, `server`, `configblender` CLI binaries into `bin/`.
 - `task dev:server` — runs the central service locally against a scratch Recipe DB at
-  `/tmp/configblender-dev`, writes enabled, token `devtoken`, on `:8091`.
+  `/tmp/configblender-dev`, bootstrap admin account `admin`/`devpassword`, on `:8091`.
 - `task webui:dev` — Vite dev server with hot reload against a running `dev:server`.
 - `task webui:build` — builds the Vue UI and embeds it into `internal/centralserver/ui`.
 - `task docker:build` / `task docker:manager` / `task docker:server` — build container images.
@@ -72,8 +72,8 @@ ConfigMap → pod. Secrets (Vault) are a stated non-goal for now — not connect
   — the central service: Recipe DB + Git + Starlark resolution behind an HTTP API. Public reads,
   role-gated writes: accounts (`internal/userdb`, role one of `admin`/`source-manager`/`contributor`/
   `read`) — human (username/password, session cookie) or service (API key, `Authorization: Bearer`
-  per request, no session — the Vault-token idiom for CI/scripts) — or the break-glass
-  `CONFIGBLENDER_WRITE_TOKEN` (always treated as `admin`). Embeds the built webui.
+  per request, no session — the Vault-token idiom for CI/scripts). No shared break-glass credential;
+  every identity is a named account. Embeds the built webui.
 - **`internal/cli`** + **`cmd/configblender`** — CLI (`put`/`rollback`/`list`/`get`/`history`/`resolve`/
   `explain`), usable against a local DB (`--db`) or the central service (`--central-url`).
 - **`webui/`** — Vue 3 + shadcn-vue UI (Vault-like): Recipe list, editor, history/diff, rollback,

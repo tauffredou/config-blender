@@ -2,6 +2,7 @@ package centralserver_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/cookiejar"
@@ -12,9 +13,19 @@ import (
 	"configblender/internal/centralapi"
 	"configblender/internal/centralserver"
 	"configblender/internal/recipesource"
+	"configblender/internal/userdb"
 )
 
-const testWriteToken = "test-token"
+// testAdminUser/testAdminPassword is the one account newTestServer
+// bootstraps directly on the store (bypassing HTTP, the way
+// cmd/server.bootstrapAdmin seeds a brand-new deployment) — every other
+// identity a test needs (another human account, a service account) is
+// created over the API using an authenticated session as this account,
+// since there is no shared break-glass credential to shortcut through.
+const (
+	testAdminUser     = "bootstrap-admin"
+	testAdminPassword = "bootstrap-admin-pw"
+)
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -24,10 +35,47 @@ func newTestServer(t *testing.T) *httptest.Server {
 		t.Fatalf("recipesource.Open: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
+	if err := store.CreateUser(context.Background(), testAdminUser, testAdminPassword, userdb.RoleAdmin); err != nil {
+		t.Fatalf("bootstrapping admin account: %v", err)
+	}
 
-	srv := httptest.NewServer(centralserver.New(store, testWriteToken).Handler())
+	srv := httptest.NewServer(centralserver.New(store).Handler())
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// clientWithCookies returns an httptest client with a cookie jar, since
+// session auth relies on the browser (or here, the test client) storing
+// and resending the cookie POST LoginPath sets — srv.Client() alone has no
+// jar, so cookies wouldn't persist across requests.
+func clientWithCookies(t *testing.T, srv *httptest.Server) *http.Client {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New: %v", err)
+	}
+	c := *srv.Client()
+	c.Jar = jar
+	return &c
+}
+
+// adminSession logs a fresh cookie-jar client in as the bootstrap admin
+// account newTestServer creates — the one identity every test can rely on
+// to set up fixtures (other accounts, sources) via the real API rather than
+// a shared break-glass credential.
+func adminSession(t *testing.T, srv *httptest.Server) *http.Client {
+	t.Helper()
+	client := clientWithCookies(t, srv)
+	body, _ := json.Marshal(centralapi.LoginRequest{Username: testAdminUser, Password: testAdminPassword})
+	resp, err := client.Post(srv.URL+centralapi.LoginPath, "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST login (bootstrap admin): %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login as bootstrap admin: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	return client
 }
 
 func putSource(t *testing.T, srv *httptest.Server, name string, src centralapi.GitSource) {
@@ -40,8 +88,7 @@ func putSource(t *testing.T, srv *httptest.Server, name string, src centralapi.G
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+testWriteToken)
-	resp, err := srv.Client().Do(req)
+	resp, err := adminSession(t, srv).Do(req)
 	if err != nil {
 		t.Fatalf("PUT source: %v", err)
 	}
@@ -96,11 +143,11 @@ func TestPutSource_CredentialsNeverReturnedByList(t *testing.T) {
 	}
 }
 
-func TestPutSource_RequiresToken(t *testing.T) {
+func TestPutSource_RequiresAuth(t *testing.T) {
 	srv := newTestServer(t)
 
 	body, _ := json.Marshal(centralapi.GitSource{Repo: "https://example.invalid/config.git"})
-	req, err := http.NewRequest(http.MethodPut, srv.URL+centralapi.SourcesPath+"/no-token", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPut, srv.URL+centralapi.SourcesPath+"/no-auth", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -110,7 +157,7 @@ func TestPutSource_RequiresToken(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("PUT without token: status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+		t.Errorf("PUT with no identity: status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 }
 
@@ -122,10 +169,9 @@ func TestTestConnection_UnreachableRepoReturnsOkFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+testWriteToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := srv.Client().Do(req)
+	resp, err := adminSession(t, srv).Do(req)
 	if err != nil {
 		t.Fatalf("POST test-connection: %v", err)
 	}
@@ -144,21 +190,6 @@ func TestTestConnection_UnreachableRepoReturnsOkFalse(t *testing.T) {
 	if result.Error == "" {
 		t.Error("TestConnectionResponse.Error is empty, want a reason")
 	}
-}
-
-// clientWithCookies returns an httptest client with a cookie jar, since
-// session auth relies on the browser (or here, the test client) storing
-// and resending the cookie POST LoginPath sets — srv.Client() alone has no
-// jar, so cookies wouldn't persist across requests.
-func clientWithCookies(t *testing.T, srv *httptest.Server) *http.Client {
-	t.Helper()
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("cookiejar.New: %v", err)
-	}
-	c := *srv.Client()
-	c.Jar = jar
-	return &c
 }
 
 func getSession(t *testing.T, client *http.Client, srv *httptest.Server) centralapi.SessionResponse {
@@ -184,18 +215,18 @@ func TestSession_UnauthenticatedByDefault(t *testing.T) {
 	}
 }
 
-func TestLogin_WrongToken_Returns401AndNoSession(t *testing.T) {
+func TestLogin_WrongPassword_Returns401AndNoSession(t *testing.T) {
 	srv := newTestServer(t)
 	client := clientWithCookies(t, srv)
 
-	body, _ := json.Marshal(centralapi.LoginRequest{Token: "wrong-token"})
+	body, _ := json.Marshal(centralapi.LoginRequest{Username: testAdminUser, Password: "wrong-password"})
 	resp, err := client.Post(srv.URL+centralapi.LoginPath, "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST login: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("login with wrong token: status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+		t.Errorf("login with wrong password: status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 	if s := getSession(t, client, srv); s.Authenticated {
 		t.Error("Session.Authenticated = true after a failed login, want false")
@@ -209,7 +240,7 @@ func TestLogin_ThenWriteEndpointSucceedsWithoutBearerHeader(t *testing.T) {
 	srv := newTestServer(t)
 	client := clientWithCookies(t, srv)
 
-	body, _ := json.Marshal(centralapi.LoginRequest{Token: testWriteToken})
+	body, _ := json.Marshal(centralapi.LoginRequest{Username: testAdminUser, Password: testAdminPassword})
 	loginResp, err := client.Post(srv.URL+centralapi.LoginPath, "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST login: %v", err)
@@ -229,7 +260,7 @@ func TestLogin_ThenWriteEndpointSucceedsWithoutBearerHeader(t *testing.T) {
 		t.Fatalf("NewRequest: %v", err)
 	}
 	// Deliberately no Authorization header — the cookie alone must satisfy
-	// requireToken.
+	// requireRole.
 	putResp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("PUT source: %v", err)
@@ -240,9 +271,9 @@ func TestLogin_ThenWriteEndpointSucceedsWithoutBearerHeader(t *testing.T) {
 	}
 }
 
-// loginAsUser creates username/password/role via the admin bearer token,
-// then logs client in as that user, returning the SessionResponse from the
-// login call.
+// loginAsUser creates username/password/role via an authenticated admin
+// session, then logs client in as that user, returning the SessionResponse
+// from the login call.
 func loginAsUser(t *testing.T, srv *httptest.Server, client *http.Client, username, password, role string) centralapi.SessionResponse {
 	t.Helper()
 	createUser(t, srv, username, password, role)
@@ -270,9 +301,8 @@ func createUser(t *testing.T, srv *httptest.Server, username, password, role str
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+testWriteToken)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := srv.Client().Do(req)
+	resp, err := adminSession(t, srv).Do(req)
 	if err != nil {
 		t.Fatalf("POST users: %v", err)
 	}
@@ -287,9 +317,8 @@ func TestCreateUser_InvalidRole_Returns400(t *testing.T) {
 
 	body, _ := json.Marshal(centralapi.CreateUserRequest{Username: "nobody", Password: "pw", Role: "superuser"})
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+centralapi.UsersPath, bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+testWriteToken)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := srv.Client().Do(req)
+	resp, err := adminSession(t, srv).Do(req)
 	if err != nil {
 		t.Fatalf("POST users: %v", err)
 	}
@@ -398,8 +427,12 @@ func TestRoleAdmin_CanManageUsers(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(listed.Users) != 1 || listed.Users[0].Username != "root" {
-		t.Errorf("ListUsers = %+v, want just [root]", listed.Users)
+	found := make(map[string]bool, len(listed.Users))
+	for _, u := range listed.Users {
+		found[u.Username] = true
+	}
+	if !found["root"] || !found[testAdminUser] {
+		t.Errorf("ListUsers = %+v, want at least %q and %q", listed.Users, "root", testAdminUser)
 	}
 }
 
@@ -520,7 +553,7 @@ func TestLogout_ClearsSession(t *testing.T) {
 	srv := newTestServer(t)
 	client := clientWithCookies(t, srv)
 
-	body, _ := json.Marshal(centralapi.LoginRequest{Token: testWriteToken})
+	body, _ := json.Marshal(centralapi.LoginRequest{Username: testAdminUser, Password: testAdminPassword})
 	loginResp, err := client.Post(srv.URL+centralapi.LoginPath, "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST login: %v", err)
@@ -541,8 +574,8 @@ func TestLogout_ClearsSession(t *testing.T) {
 	}
 }
 
-// createServiceAccount registers a service account as admin (via the
-// break-glass write token) and returns its plaintext API key.
+// createServiceAccount registers a service account via an authenticated
+// admin session and returns its plaintext API key.
 func createServiceAccount(t *testing.T, srv *httptest.Server, username, role string) string {
 	t.Helper()
 	body, _ := json.Marshal(centralapi.CreateServiceAccountRequest{Username: username, Role: role})
@@ -550,9 +583,8 @@ func createServiceAccount(t *testing.T, srv *httptest.Server, username, role str
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+testWriteToken)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := srv.Client().Do(req)
+	resp, err := adminSession(t, srv).Do(req)
 	if err != nil {
 		t.Fatalf("POST service-accounts: %v", err)
 	}
@@ -672,8 +704,7 @@ func TestRotateServiceAccountKey_InvalidatesOldKey(t *testing.T) {
 	oldKey := createServiceAccount(t, srv, "ci-bot", "contributor")
 
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+centralapi.ServiceAccountsPath+"/ci-bot/rotate", nil)
-	req.Header.Set("Authorization", "Bearer "+testWriteToken)
-	rotateResp, err := srv.Client().Do(req)
+	rotateResp, err := adminSession(t, srv).Do(req)
 	if err != nil {
 		t.Fatalf("POST rotate: %v", err)
 	}

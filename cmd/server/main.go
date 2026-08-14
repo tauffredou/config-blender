@@ -25,14 +25,6 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(log)
 
-	// Read from the environment, not a flag, so it doesn't show up in
-	// process listings (ps) — same reasoning as internal/gitauth, and
-	// naturally fed by a mounted K8s Secret in a real deployment.
-	writeToken := os.Getenv("CONFIGBLENDER_WRITE_TOKEN")
-	if writeToken == "" {
-		log.Warn("CONFIGBLENDER_WRITE_TOKEN is not set — the break-glass admin bearer/login is disabled; write access is entirely through per-user accounts (docs/07-open-questions.md)")
-	}
-
 	store, err := recipesource.Open(*dbPath, recipesource.WithLogger(log))
 	if err != nil {
 		log.Error("unable to open recipe database", "path", *dbPath, "error", err)
@@ -46,7 +38,7 @@ func main() {
 	}
 
 	log.Info("configblender central service listening", "addr", *addr, "recipe-db", *dbPath)
-	if err := http.ListenAndServe(*addr, centralserver.New(store, writeToken, centralserver.WithLogger(log)).Handler()); err != nil {
+	if err := http.ListenAndServe(*addr, centralserver.New(store, centralserver.WithLogger(log)).Handler()); err != nil {
 		log.Error("server exited with an error", "error", err)
 		os.Exit(1)
 	}

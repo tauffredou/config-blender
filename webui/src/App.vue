@@ -25,28 +25,17 @@ import SourcesAdmin from "@/components/SourcesAdmin.vue"
 import UsersAdmin from "@/components/UsersAdmin.vue"
 
 const { authenticated, checked, username, role, hasRole, login, logout } = useAuth()
-const loginMode = ref<"account" | "token">("account")
 const loginUsername = ref("")
 const loginPassword = ref("")
-const loginToken = ref("")
 const loggingIn = ref(false)
 
-function toggleLoginMode() {
-  loginMode.value = loginMode.value === "account" ? "token" : "account"
-}
-
 async function submitLogin() {
-  if (loginMode.value === "token" ? !loginToken.value : !loginUsername.value || !loginPassword.value) return
+  if (!loginUsername.value || !loginPassword.value) return
   loggingIn.value = true
   try {
-    if (loginMode.value === "token") {
-      await login({ token: loginToken.value })
-      loginToken.value = ""
-    } else {
-      await login({ username: loginUsername.value, password: loginPassword.value })
-      loginUsername.value = ""
-      loginPassword.value = ""
-    }
+    await login({ username: loginUsername.value, password: loginPassword.value })
+    loginUsername.value = ""
+    loginPassword.value = ""
   } catch (e) {
     toast.error("Échec de la connexion", { description: (e as Error).message })
   } finally {
@@ -147,7 +136,7 @@ async function onRolledBack() {
         <p class="mt-1 text-xs text-neutral-400">Connectez-vous pour continuer.</p>
       </div>
 
-      <div v-if="loginMode === 'account'" class="space-y-3">
+      <div class="space-y-3">
         <div class="space-y-1.5">
           <Label for="login-username" class="text-xs text-neutral-300">Utilisateur</Label>
           <Input
@@ -172,29 +161,6 @@ async function onRolledBack() {
         <Button class="w-full" :disabled="!loginUsername || !loginPassword || loggingIn" @click="submitLogin">
           {{ loggingIn ? "Connexion…" : "Se connecter" }}
         </Button>
-        <button type="button" class="text-xs text-neutral-400 underline hover:text-neutral-200" @click="toggleLoginMode">
-          Utiliser un token
-        </button>
-      </div>
-
-      <div v-else class="space-y-3">
-        <div class="space-y-1.5">
-          <Label for="login-token" class="text-xs text-neutral-300">Token d'écriture</Label>
-          <Input
-            id="login-token"
-            v-model="loginToken"
-            type="password"
-            placeholder="token de secours"
-            class="bg-neutral-800 text-white border-neutral-700"
-            @keyup.enter="submitLogin"
-          />
-        </div>
-        <Button class="w-full" :disabled="!loginToken || loggingIn" @click="submitLogin">
-          {{ loggingIn ? "Connexion…" : "Se connecter" }}
-        </Button>
-        <button type="button" class="text-xs text-neutral-400 underline hover:text-neutral-200" @click="toggleLoginMode">
-          Utiliser un compte
-        </button>
       </div>
     </div>
   </div>

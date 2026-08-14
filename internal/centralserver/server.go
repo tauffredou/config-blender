@@ -14,7 +14,6 @@ package centralserver
 import (
 	"context"
 	cryptorand "crypto/rand"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,19 +61,20 @@ type Store interface {
 
 // Server exposes Store over HTTP, plus the embedded UI (ui.go). Reads are
 // unauthenticated; writes are role-gated (internal/userdb.Role) behind an
-// identity presented either as `Authorization: Bearer <writeToken>`
-// (API/CLI clients, always treated as RoleAdmin) or a session cookie
-// obtained from POST centralapi.LoginPath (the webui, docs/07-open-questions.md
-// — this reopens the earlier "GitOps only, no API push" decision,
-// deliberately, in exchange for the UI's edit/rollback flow: only the
-// Recipe *structure* is affected, layer *content* stays Git-sourced and
-// PR-reviewable regardless).
+// identity presented either as a session cookie obtained from
+// POST centralapi.LoginPath (a human account, the webui) or
+// `Authorization: Bearer <api-key>` (a service account,
+// docs/05-recipe-and-crd.md §5.3ter — this reopens the earlier "GitOps
+// only, no API push" decision, deliberately, in exchange for the UI's
+// edit/rollback flow: only the Recipe *structure* is affected, layer
+// *content* stays Git-sourced and PR-reviewable regardless). There is no
+// shared break-glass credential: every identity is a named account, human
+// or service, in internal/userdb.
 type Server struct {
-	store      Store
-	writeToken string
-	session    *sessionSigner
-	log        *slog.Logger
-	metrics    *metrics
+	store   Store
+	session *sessionSigner
+	log     *slog.Logger
+	metrics *metrics
 }
 
 // Option configures a Server built by New.
@@ -86,14 +86,9 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Server) { s.log = l }
 }
 
-// New builds a Server. writeToken, when set, acts as a break-glass
-// RoleAdmin identity via `Authorization: Bearer <writeToken>` or a session
-// cookie from POST centralapi.LoginPath — independent of, and in addition
-// to, per-user accounts (internal/userdb) authenticated the same two ways.
-// An empty writeToken simply disables that break-glass path; user accounts
-// still work.
-func New(store Store, writeToken string, opts ...Option) *Server {
-	s := &Server{store: store, writeToken: writeToken, log: slog.Default(), metrics: newMetrics()}
+// New builds a Server.
+func New(store Store, opts ...Option) *Server {
+	s := &Server{store: store, log: slog.Default(), metrics: newMetrics()}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -151,19 +146,15 @@ type identity struct {
 	role    userdb.Role
 }
 
-// authenticate resolves the caller's identity from a session cookie or a
-// bearer token, in that order; the zero identity and false if neither is
-// present or valid. A bearer token is checked two ways in turn: against the
-// break-glass write token first (cheap, constant-time), then as a service
-// account's API key (internal/userdb.VerifyAPIKey) — the Vault-token idiom
-// for machine callers, which authenticate per request rather than logging
-// in for a session cookie the way a human/browser does.
+// authenticate resolves the caller's identity from a session cookie (a
+// human account) or a bearer token (a service account's API key,
+// internal/userdb.VerifyAPIKey — the Vault-token idiom for machine callers,
+// which authenticate per request rather than logging in for a session
+// cookie the way a human/browser does), in that order; the zero identity
+// and false if neither is present or valid.
 func (s *Server) authenticate(r *http.Request) (identity, bool) {
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
 		if subject, ok := s.session.valid(cookie.Value); ok {
-			if subject == "" {
-				return identity{subject: "token", role: userdb.RoleAdmin}, true
-			}
 			// Re-check against live data, not a role baked into the
 			// cookie at login time: a role change or account deletion
 			// takes effect on the very next request instead of waiting
@@ -174,9 +165,6 @@ func (s *Server) authenticate(r *http.Request) (identity, bool) {
 		}
 	}
 	if bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); bearer != "" {
-		if s.writeToken != "" && subtle.ConstantTimeCompare([]byte(bearer), []byte(s.writeToken)) == 1 {
-			return identity{subject: "token", role: userdb.RoleAdmin}, true
-		}
 		if username, role, err := s.store.VerifyAPIKey(r.Context(), bearer); err == nil {
 			return identity{subject: username, role: role}, true
 		}
@@ -208,11 +196,12 @@ func (s *Server) requireRole(roles ...userdb.Role) func(http.HandlerFunc) http.H
 	}
 }
 
-// handleLogin authenticates either a registered user (Username+Password,
-// checked against internal/userdb) or the break-glass write token (Token),
-// and on success sets a session cookie so the webui doesn't need to attach
-// `Authorization: Bearer` to every write request itself — the browser
-// sends the cookie automatically on same-origin requests.
+// handleLogin authenticates a registered human account (Username+Password,
+// checked against internal/userdb) and on success sets a session cookie so
+// the webui doesn't need to attach `Authorization: Bearer` to every write
+// request itself — the browser sends the cookie automatically on
+// same-origin requests. A service account never logs in here — it
+// authenticates with its API key directly, per request (see authenticate).
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req centralapi.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -220,26 +209,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var subject string
-	var role userdb.Role
-	switch {
-	case req.Token != "":
-		if s.writeToken == "" || subtle.ConstantTimeCompare([]byte(req.Token), []byte(s.writeToken)) != 1 {
-			http.Error(w, "invalid token", http.StatusUnauthorized)
-			return
-		}
-		subject, role = "", userdb.RoleAdmin
-	case req.Username != "" && req.Password != "":
-		r2, err := s.store.VerifyUser(r.Context(), req.Username, req.Password)
-		if err != nil {
-			http.Error(w, "invalid username or password", http.StatusUnauthorized)
-			return
-		}
-		subject, role = req.Username, r2
-	default:
-		http.Error(w, "missing credentials: provide username+password or token", http.StatusBadRequest)
+	if req.Username == "" || req.Password == "" {
+		http.Error(w, "missing credentials: provide username and password", http.StatusBadRequest)
 		return
 	}
+	role, err := s.store.VerifyUser(r.Context(), req.Username, req.Password)
+	if err != nil {
+		http.Error(w, "invalid username or password", http.StatusUnauthorized)
+		return
+	}
+	subject := req.Username
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,

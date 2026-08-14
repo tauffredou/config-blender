@@ -127,8 +127,8 @@ func (s *Store) Ping() error {
 // session cookies with, generating and persisting one on first call if
 // none exists yet. Persisted (rather than generated fresh per process) so
 // restarting the central service doesn't log out every browser session;
-// unlike the write token, this secret is never operator-supplied, so a
-// session stays unforgeable even when CONFIGBLENDER_WRITE_TOKEN is unset.
+// never operator-supplied, so a session stays unforgeable independent of
+// any deployment-time credential.
 func (s *Store) SessionSecret(ctx context.Context) ([]byte, error) {
 	var secret []byte
 	err := s.rawDB.Update(func(tx *bbolt.Tx) error {

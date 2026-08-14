@@ -17,13 +17,12 @@ const sessionCookieName = "cb_session"
 const sessionTTL = 7 * 24 * time.Hour
 
 // sessionSigner issues and verifies session-cookie values without any
-// server-side session store: a cookie is a subject (a username, or ""
-// for the break-glass write-token identity — server.go's authenticate)
-// plus an expiry timestamp, HMACed with a random secret persisted in the
-// Recipe database (recipesource.Store.SessionSecret). Persisted rather
-// than derived from the write token (as an earlier version of this did):
-// with real per-user accounts, sessions must stay unforgeable even when
-// no write token is configured at all.
+// server-side session store: a cookie is a subject (a human account's
+// username — server.go's authenticate) plus an expiry timestamp, HMACed
+// with a random secret persisted in the Recipe database
+// (recipesource.Store.SessionSecret) rather than derived from any
+// operator-supplied value, so sessions stay unforgeable independent of
+// whatever credentials happen to be configured.
 type sessionSigner struct {
 	key []byte
 }

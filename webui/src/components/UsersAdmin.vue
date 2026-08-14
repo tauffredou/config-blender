@@ -1,9 +1,18 @@
 <script setup lang="ts">
-import { ref } from "vue"
+import { computed, ref } from "vue"
 import { toast } from "vue-sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import {
   Table,
   TableBody,
@@ -20,8 +29,9 @@ const { username: currentUsername } = useAuth()
 const users = ref<User[]>([])
 const loading = ref(false)
 
-const roles: Role[] = ["admin", "source-manager", "contributor"]
+const roles: Role[] = ["admin", "source-manager", "contributor", "read"]
 
+const newKind = ref<"human" | "service">("human")
 const newUsername = ref("")
 const newPassword = ref("")
 const newRole = ref<Role>("contributor")
@@ -31,6 +41,28 @@ const adding = ref(false)
 // "saving" state never visually blocks the others.
 const updatingRole = ref<Record<string, boolean>>({})
 const deleting = ref<Record<string, boolean>>({})
+const rotating = ref<Record<string, boolean>>({})
+
+// A freshly generated API key is shown exactly once (create or rotate) —
+// the backend never returns it again, so this dialog is the only chance to
+// copy it.
+const revealedKey = ref<{ username: string; apiKey: string } | null>(null)
+const revealOpen = computed({
+  get: () => revealedKey.value !== null,
+  set: (open: boolean) => {
+    if (!open) revealedKey.value = null
+  },
+})
+
+async function copyKey() {
+  if (!revealedKey.value) return
+  try {
+    await navigator.clipboard.writeText(revealedKey.value.apiKey)
+    toast.success("Clé copiée dans le presse-papiers.")
+  } catch (e) {
+    toast.error("Échec de la copie", { description: (e as Error).message })
+  }
+}
 
 async function load() {
   loading.value = true
@@ -66,7 +98,7 @@ async function remove(user: User) {
   deleting.value[user.username] = true
   try {
     await api.deleteUser(user.username)
-    toast.success(`Utilisateur « ${user.username} » supprimé.`)
+    toast.success(`Compte « ${user.username} » supprimé.`)
     await load()
   } catch (e) {
     toast.error("Échec de la suppression", { description: (e as Error).message })
@@ -75,15 +107,33 @@ async function remove(user: User) {
   }
 }
 
+async function rotate(user: User) {
+  rotating.value[user.username] = true
+  try {
+    const result = await api.rotateServiceAccountKey(user.username)
+    revealedKey.value = { username: user.username, apiKey: result.apiKey }
+    toast.success(`Clé de « ${user.username} » régénérée — l'ancienne est immédiatement invalide.`)
+  } catch (e) {
+    toast.error("Échec de la rotation", { description: (e as Error).message })
+  } finally {
+    rotating.value[user.username] = false
+  }
+}
+
 async function add() {
   const username = newUsername.value.trim()
-  const password = newPassword.value
-  if (!username || !password) return
+  if (!username) return
 
   adding.value = true
   try {
-    await api.createUser(username, password, newRole.value)
-    toast.success(`Utilisateur « ${username} » créé.`)
+    if (newKind.value === "service") {
+      const result = await api.createServiceAccount(username, newRole.value)
+      revealedKey.value = { username, apiKey: result.apiKey }
+    } else {
+      if (!newPassword.value) return
+      await api.createUser(username, newPassword.value, newRole.value)
+      toast.success(`Utilisateur « ${username} » créé.`)
+    }
     newUsername.value = ""
     newPassword.value = ""
     newRole.value = "contributor"
@@ -101,16 +151,19 @@ async function add() {
     <div>
       <h2 class="text-lg font-semibold">Utilisateurs</h2>
       <p class="text-sm text-muted-foreground">
-        Comptes nommés avec un rôle (admin, source-manager, contributor). Réservé aux administrateurs.
-        Le token d'écriture partagé reste disponible comme accès de secours ("token"), en dehors de
-        cette liste.
+        Comptes nommés avec un rôle (admin, source-manager, contributor, read). Réservé aux
+        administrateurs. Un compte humain se connecte par mot de passe (session) ; un compte de
+        service s'authentifie avec une clé d'API envoyée en <code>Authorization: Bearer</code> à
+        chaque requête, sans session — même modèle de rôles pour les deux. Le token d'écriture
+        partagé reste disponible comme accès de secours ("token"), en dehors de cette liste.
       </p>
     </div>
 
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Utilisateur</TableHead>
+          <TableHead>Compte</TableHead>
+          <TableHead>Type</TableHead>
           <TableHead>Rôle</TableHead>
           <TableHead>Créé le</TableHead>
           <TableHead class="text-right">Actions</TableHead>
@@ -119,6 +172,9 @@ async function add() {
       <TableBody>
         <TableRow v-for="user in users" :key="user.username">
           <TableCell class="font-mono text-xs">{{ user.username }}</TableCell>
+          <TableCell class="text-xs text-muted-foreground">
+            {{ user.kind === "service" ? "service" : "humain" }}
+          </TableCell>
           <TableCell>
             <select
               :value="user.role"
@@ -130,7 +186,16 @@ async function add() {
             </select>
           </TableCell>
           <TableCell class="text-xs text-muted-foreground">{{ new Date(user.createdAt).toLocaleString() }}</TableCell>
-          <TableCell class="text-right">
+          <TableCell class="text-right space-x-2">
+            <Button
+              v-if="user.kind === 'service'"
+              variant="outline"
+              size="sm"
+              :disabled="rotating[user.username]"
+              @click="rotate(user)"
+            >
+              {{ rotating[user.username] ? "…" : "Régénérer la clé" }}
+            </Button>
             <Button
               variant="destructive"
               size="sm"
@@ -143,37 +208,87 @@ async function add() {
           </TableCell>
         </TableRow>
         <TableRow v-if="!loading && users.length === 0">
-          <TableCell colspan="4" class="text-sm text-muted-foreground">Aucun utilisateur enregistré.</TableCell>
+          <TableCell colspan="5" class="text-sm text-muted-foreground">Aucun compte enregistré.</TableCell>
         </TableRow>
       </TableBody>
     </Table>
 
     <div class="space-y-3 rounded-md border p-3">
-      <div class="flex items-end gap-2">
-        <div class="flex-1 space-y-1">
-          <Label class="text-xs text-muted-foreground">Utilisateur</Label>
-          <Input v-model="newUsername" placeholder="alice" class="h-8 text-sm" />
-        </div>
-        <div class="flex-1 space-y-1">
-          <Label class="text-xs text-muted-foreground">Mot de passe</Label>
-          <Input v-model="newPassword" type="password" class="h-8 text-sm" autocomplete="off" />
-        </div>
-        <div class="flex-1 space-y-1">
-          <Label class="text-xs text-muted-foreground">Rôle</Label>
-          <select
-            v-model="newRole"
-            class="dark:bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-full rounded-lg border bg-transparent px-2 text-sm outline-none focus-visible:ring-3"
-          >
-            <option v-for="r in roles" :key="r" :value="r">{{ r }}</option>
-          </select>
-        </div>
-      </div>
+      <Tabs v-model="newKind">
+        <TabsList>
+          <TabsTrigger value="human">Compte humain</TabsTrigger>
+          <TabsTrigger value="service">Compte de service</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="human">
+          <div class="flex items-end gap-2 pt-2">
+            <div class="flex-1 space-y-1">
+              <Label class="text-xs text-muted-foreground">Utilisateur</Label>
+              <Input v-model="newUsername" placeholder="alice" class="h-8 text-sm" />
+            </div>
+            <div class="flex-1 space-y-1">
+              <Label class="text-xs text-muted-foreground">Mot de passe</Label>
+              <Input v-model="newPassword" type="password" class="h-8 text-sm" autocomplete="off" />
+            </div>
+            <div class="flex-1 space-y-1">
+              <Label class="text-xs text-muted-foreground">Rôle</Label>
+              <select
+                v-model="newRole"
+                class="dark:bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-full rounded-lg border bg-transparent px-2 text-sm outline-none focus-visible:ring-3"
+              >
+                <option v-for="r in roles" :key="r" :value="r">{{ r }}</option>
+              </select>
+            </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="service">
+          <div class="flex items-end gap-2 pt-2">
+            <div class="flex-1 space-y-1">
+              <Label class="text-xs text-muted-foreground">Nom du compte de service</Label>
+              <Input v-model="newUsername" placeholder="ci-bot" class="h-8 text-sm" />
+            </div>
+            <div class="flex-1 space-y-1">
+              <Label class="text-xs text-muted-foreground">Rôle</Label>
+              <select
+                v-model="newRole"
+                class="dark:bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-full rounded-lg border bg-transparent px-2 text-sm outline-none focus-visible:ring-3"
+              >
+                <option v-for="r in roles" :key="r" :value="r">{{ r }}</option>
+              </select>
+            </div>
+          </div>
+          <p class="pt-2 text-xs text-muted-foreground">
+            Aucun mot de passe : une clé d'API est générée à la création et affichée une seule fois.
+          </p>
+        </TabsContent>
+      </Tabs>
 
       <div class="flex justify-end gap-2">
-        <Button :disabled="!newUsername.trim() || !newPassword || adding" @click="add">
+        <Button
+          :disabled="!newUsername.trim() || (newKind === 'human' && !newPassword) || adding"
+          @click="add"
+        >
           {{ adding ? "Création…" : "Créer" }}
         </Button>
       </div>
     </div>
+
+    <Dialog v-model:open="revealOpen">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Clé d'API pour « {{ revealedKey?.username }} »</DialogTitle>
+          <DialogDescription>
+            Copiez-la maintenant : elle ne sera plus jamais affichée. En cas de perte, régénérez une
+            nouvelle clé depuis cette page (l'ancienne sera immédiatement invalide).
+          </DialogDescription>
+        </DialogHeader>
+        <Input :model-value="revealedKey?.apiKey" readonly class="font-mono text-xs" @focus="($event.target as HTMLInputElement).select()" />
+        <DialogFooter>
+          <Button variant="secondary" @click="revealOpen = false">Fermer</Button>
+          <Button @click="copyKey">Copier</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>

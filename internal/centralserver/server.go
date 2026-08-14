@@ -47,11 +47,14 @@ type Store interface {
 	DeleteSource(ctx context.Context, name string) error
 	TestSourceConnection(ctx context.Context, repo string, auth *gitsourcedb.Credentials) error
 	CreateUser(ctx context.Context, username, password string, role userdb.Role) error
+	CreateServiceAccount(ctx context.Context, username string, role userdb.Role) (string, error)
+	RotateServiceAccountKey(ctx context.Context, username string) (string, error)
 	ListUsers(ctx context.Context) ([]userdb.User, error)
 	SetUserRole(ctx context.Context, username string, role userdb.Role) error
 	SetUserPassword(ctx context.Context, username, password string) error
 	DeleteUser(ctx context.Context, username string) error
 	VerifyUser(ctx context.Context, username, password string) (userdb.Role, error)
+	VerifyAPIKey(ctx context.Context, apiKey string) (string, userdb.Role, error)
 	UserRole(ctx context.Context, username string) (userdb.Role, error)
 	SessionSecret(ctx context.Context) ([]byte, error)
 	Ping() error
@@ -124,6 +127,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+centralapi.UsersPath, s.requireRole(userdb.RoleAdmin)(s.handleCreateUser))
 	mux.HandleFunc("PUT "+centralapi.UsersPath+"/{username}", s.requireRole(userdb.RoleAdmin)(s.handleUpdateUser))
 	mux.HandleFunc("DELETE "+centralapi.UsersPath+"/{username}", s.requireRole(userdb.RoleAdmin)(s.handleDeleteUser))
+	mux.HandleFunc("POST "+centralapi.ServiceAccountsPath, s.requireRole(userdb.RoleAdmin)(s.handleCreateServiceAccount))
+	mux.HandleFunc("POST "+centralapi.ServiceAccountsPath+"/{username}/rotate", s.requireRole(userdb.RoleAdmin)(s.handleRotateServiceAccountKey))
 	mux.HandleFunc("POST "+centralapi.LoginPath, s.handleLogin)
 	mux.HandleFunc("POST "+centralapi.LogoutPath, s.handleLogout)
 	mux.HandleFunc("GET "+centralapi.SessionPath, s.handleSession)
@@ -148,7 +153,11 @@ type identity struct {
 
 // authenticate resolves the caller's identity from a session cookie or a
 // bearer token, in that order; the zero identity and false if neither is
-// present or valid.
+// present or valid. A bearer token is checked two ways in turn: against the
+// break-glass write token first (cheap, constant-time), then as a service
+// account's API key (internal/userdb.VerifyAPIKey) — the Vault-token idiom
+// for machine callers, which authenticate per request rather than logging
+// in for a session cookie the way a human/browser does.
 func (s *Server) authenticate(r *http.Request) (identity, bool) {
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
 		if subject, ok := s.session.valid(cookie.Value); ok {
@@ -164,10 +173,12 @@ func (s *Server) authenticate(r *http.Request) (identity, bool) {
 			}
 		}
 	}
-	if s.writeToken != "" {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(s.writeToken)) == 1 {
+	if bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); bearer != "" {
+		if s.writeToken != "" && subtle.ConstantTimeCompare([]byte(bearer), []byte(s.writeToken)) == 1 {
 			return identity{subject: "token", role: userdb.RoleAdmin}, true
+		}
+		if username, role, err := s.store.VerifyAPIKey(r.Context(), bearer); err == nil {
+			return identity{subject: username, role: role}, true
 		}
 	}
 	return identity{}, false
@@ -509,7 +520,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]centralapi.User, len(users))
 	for i, u := range users {
-		out[i] = centralapi.User{Username: u.Username, Role: string(u.Role), CreatedAt: u.CreatedAt}
+		out[i] = centralapi.User{Username: u.Username, Kind: string(u.Kind), Role: string(u.Role), CreatedAt: u.CreatedAt}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -577,11 +588,78 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
+			if errors.Is(err, userdb.ErrInvalidInput) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			s.writeError(w, r, err)
 			return
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleCreateServiceAccount registers a machine account and returns its
+// API key once — the account never has a password, so unlike
+// handleCreateUser there's nothing for the caller to supply beyond a
+// username and role.
+func (s *Server) handleCreateServiceAccount(w http.ResponseWriter, r *http.Request) {
+	var req centralapi.CreateServiceAccountRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "decoding request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	role := userdb.Role(req.Role)
+	if !role.Valid() {
+		http.Error(w, fmt.Sprintf("invalid role %q", req.Role), http.StatusBadRequest)
+		return
+	}
+
+	apiKey, err := s.store.CreateServiceAccount(r.Context(), req.Username, role)
+	if err != nil {
+		if errors.Is(err, userdb.ErrAlreadyExists) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if errors.Is(err, userdb.ErrInvalidInput) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.writeError(w, r, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(centralapi.ServiceAccountKeyResponse{Username: req.Username, Role: string(role), APIKey: apiKey})
+}
+
+// handleRotateServiceAccountKey replaces a service account's API key and
+// returns the new one once, immediately invalidating the old one.
+func (s *Server) handleRotateServiceAccountKey(w http.ResponseWriter, r *http.Request) {
+	username := r.PathValue("username")
+
+	apiKey, err := s.store.RotateServiceAccountKey(r.Context(), username)
+	if err != nil {
+		if errors.Is(err, userdb.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, userdb.ErrInvalidInput) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.writeError(w, r, err)
+		return
+	}
+
+	role, err := s.store.UserRole(r.Context(), username)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(centralapi.ServiceAccountKeyResponse{Username: username, Role: string(role), APIKey: apiKey})
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {

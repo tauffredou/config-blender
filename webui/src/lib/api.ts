@@ -80,4 +80,17 @@ export const api = {
     requestJSON<void>(`/v1/users/${encodeURIComponent(username)}`, "PUT", changes),
 
   deleteUser: (username: string) => request<void>(`/v1/users/${encodeURIComponent(username)}`, { method: "DELETE" }),
+
+  // createServiceAccount registers a machine account (no password — an API
+  // key instead) and returns it once; it is never retrievable again, only
+  // rotated (rotateServiceAccountKey).
+  createServiceAccount: (username: string, role: Role) =>
+    requestJSON<{ username: string; role: Role; apiKey: string }>("/v1/service-accounts", "POST", { username, role }),
+
+  rotateServiceAccountKey: (username: string) =>
+    requestJSON<{ username: string; role: Role; apiKey: string }>(
+      `/v1/service-accounts/${encodeURIComponent(username)}/rotate`,
+      "POST",
+      undefined,
+    ),
 }

@@ -70,9 +70,10 @@ ConfigMap → pod. Secrets (Vault) are a stated non-goal for now — not connect
   central service). Tested against both a fake client and a real kind cluster.
 - **`internal/centralapi`** / **`internal/centralserver`** / **`internal/centralclient`** + `cmd/server`
   — the central service: Recipe DB + Git + Starlark resolution behind an HTTP API. Public reads,
-  role-gated writes: per-user accounts (`internal/userdb`, role one of `admin`/`source-manager`/
-  `contributor`) or the break-glass `CONFIGBLENDER_WRITE_TOKEN` (always treated as `admin`). Embeds the
-  built webui.
+  role-gated writes: accounts (`internal/userdb`, role one of `admin`/`source-manager`/`contributor`/
+  `read`) — human (username/password, session cookie) or service (API key, `Authorization: Bearer`
+  per request, no session — the Vault-token idiom for CI/scripts) — or the break-glass
+  `CONFIGBLENDER_WRITE_TOKEN` (always treated as `admin`). Embeds the built webui.
 - **`internal/cli`** + **`cmd/configblender`** — CLI (`put`/`rollback`/`list`/`get`/`history`/`resolve`/
   `explain`), usable against a local DB (`--db`) or the central service (`--central-url`).
 - **`webui/`** — Vue 3 + shadcn-vue UI (Vault-like): Recipe list, editor, history/diff, rollback,

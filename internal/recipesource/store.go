@@ -258,7 +258,7 @@ func (s *Store) TestSourceConnection(ctx context.Context, repo string, auth *git
 	return nil
 }
 
-// CreateUser registers a new account with the given role
+// CreateUser registers a new human account with the given role
 // (internal/userdb.Role) — admin-only over the API
 // (internal/centralserver's requireRole).
 func (s *Store) CreateUser(ctx context.Context, username, password string, role userdb.Role) error {
@@ -269,7 +269,31 @@ func (s *Store) CreateUser(ctx context.Context, username, password string, role 
 	return nil
 }
 
-// ListUsers returns every registered account (without password hashes).
+// CreateServiceAccount registers a new machine account and returns its
+// plaintext API key — shown once, same one-time-reveal contract as
+// RotateServiceAccountKey. Admin-only over the API.
+func (s *Store) CreateServiceAccount(ctx context.Context, username string, role userdb.Role) (string, error) {
+	key, err := s.users.CreateServiceAccount(username, role)
+	if err != nil {
+		return "", err
+	}
+	s.log.InfoContext(ctx, "service account created", "username", username, "role", role)
+	return key, nil
+}
+
+// RotateServiceAccountKey replaces username's API key, immediately
+// invalidating the old one, and returns the new plaintext key.
+func (s *Store) RotateServiceAccountKey(ctx context.Context, username string) (string, error) {
+	key, err := s.users.RotateServiceAccountKey(username)
+	if err != nil {
+		return "", err
+	}
+	s.log.InfoContext(ctx, "service account key rotated", "username", username)
+	return key, nil
+}
+
+// ListUsers returns every registered account, human and service (without
+// password/API-key hashes).
 func (s *Store) ListUsers(ctx context.Context) ([]userdb.User, error) {
 	return s.users.List()
 }
@@ -305,6 +329,13 @@ func (s *Store) DeleteUser(ctx context.Context, username string) error {
 // success.
 func (s *Store) VerifyUser(ctx context.Context, username, password string) (userdb.Role, error) {
 	return s.users.Verify(username, password)
+}
+
+// VerifyAPIKey checks a service account's API key, returning its username
+// and role on success — the per-request bearer-token auth path for machine
+// callers, as opposed to VerifyUser's session-oriented login.
+func (s *Store) VerifyAPIKey(ctx context.Context, apiKey string) (string, userdb.Role, error) {
+	return s.users.VerifyAPIKey(apiKey)
 }
 
 // UserRole returns username's current role — used on every authenticated

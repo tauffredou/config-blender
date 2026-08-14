@@ -540,3 +540,186 @@ func TestLogout_ClearsSession(t *testing.T) {
 		t.Error("Session.Authenticated = true after logout, want false")
 	}
 }
+
+// createServiceAccount registers a service account as admin (via the
+// break-glass write token) and returns its plaintext API key.
+func createServiceAccount(t *testing.T, srv *httptest.Server, username, role string) string {
+	t.Helper()
+	body, _ := json.Marshal(centralapi.CreateServiceAccountRequest{Username: username, Role: role})
+	req, err := http.NewRequest(http.MethodPost, srv.URL+centralapi.ServiceAccountsPath, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testWriteToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST service-accounts: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST service-accounts(%q): status = %d, want %d", username, resp.StatusCode, http.StatusOK)
+	}
+	var out centralapi.ServiceAccountKeyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.APIKey == "" {
+		t.Fatalf("POST service-accounts(%q): empty apiKey in response", username)
+	}
+	return out.APIKey
+}
+
+// bearerRequest builds a request authenticated with the given bearer token
+// — the stateless per-request auth path a service account uses, as opposed
+// to loginAsUser's session cookie.
+func bearerRequest(t *testing.T, method, url, token string, body []byte) *http.Response {
+	t.Helper()
+	var r *bytes.Reader
+	if body != nil {
+		r = bytes.NewReader(body)
+	} else {
+		r = bytes.NewReader(nil)
+	}
+	req, err := http.NewRequest(method, url, r)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	return resp
+}
+
+// A service account authenticates with its API key on every request (no
+// session/cookie involved) and is gated by the exact same role checks as a
+// human account holding the same role.
+func TestServiceAccount_APIKeyAuthenticatesAsItsRole(t *testing.T) {
+	srv := newTestServer(t)
+	apiKey := createServiceAccount(t, srv, "ci-bot", "contributor")
+
+	specBody, _ := json.Marshal(map[string]any{"layers": []any{}})
+	resp := bearerRequest(t, http.MethodPut, srv.URL+centralapi.RecipesPath+"/demo", apiKey, specBody)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("service account (contributor) PUT recipe: status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+
+	srcBody, _ := json.Marshal(centralapi.GitSource{Repo: "https://example.invalid/config.git"})
+	resp = bearerRequest(t, http.MethodPut, srv.URL+centralapi.SourcesPath+"/blocked", apiKey, srcBody)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("service account (contributor) PUT source: status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	resp = bearerRequest(t, http.MethodGet, srv.URL+centralapi.SessionPath, apiKey, nil)
+	defer resp.Body.Close()
+	var session centralapi.SessionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
+	if session.Username != "ci-bot" || session.Role != "contributor" {
+		t.Errorf("session via API key = %+v, want username=ci-bot role=contributor", session)
+	}
+}
+
+// RoleRead is the floor of the RBAC model — a service account holding it
+// must be rejected by every write endpoint, same as any other role that
+// isn't explicitly allowed.
+func TestServiceAccount_RoleRead_CannotWriteAnything(t *testing.T) {
+	srv := newTestServer(t)
+	apiKey := createServiceAccount(t, srv, "readonly-bot", "read")
+
+	specBody, _ := json.Marshal(map[string]any{"layers": []any{}})
+	resp := bearerRequest(t, http.MethodPut, srv.URL+centralapi.RecipesPath+"/demo", apiKey, specBody)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("read-role PUT recipe: status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	srcBody, _ := json.Marshal(centralapi.GitSource{Repo: "https://example.invalid/config.git"})
+	resp = bearerRequest(t, http.MethodPut, srv.URL+centralapi.SourcesPath+"/blocked", apiKey, srcBody)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("read-role PUT source: status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	resp = bearerRequest(t, http.MethodGet, srv.URL+centralapi.RecipesPath, apiKey, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("read-role GET recipes: status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestServiceAccount_UnknownOrRevokedKey_Returns401(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := bearerRequest(t, http.MethodGet, srv.URL+centralapi.UsersPath, "cbk_not-a-real-key", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("bogus API key: status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+// Rotating a service account's key must invalidate the old one immediately
+// and hand back a working replacement — the only remediation an admin has
+// for a leaked key short of deleting the account outright.
+func TestRotateServiceAccountKey_InvalidatesOldKey(t *testing.T) {
+	srv := newTestServer(t)
+	oldKey := createServiceAccount(t, srv, "ci-bot", "contributor")
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+centralapi.ServiceAccountsPath+"/ci-bot/rotate", nil)
+	req.Header.Set("Authorization", "Bearer "+testWriteToken)
+	rotateResp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST rotate: %v", err)
+	}
+	defer rotateResp.Body.Close()
+	if rotateResp.StatusCode != http.StatusOK {
+		t.Fatalf("rotate: status = %d, want %d", rotateResp.StatusCode, http.StatusOK)
+	}
+	var out centralapi.ServiceAccountKeyResponse
+	if err := json.NewDecoder(rotateResp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.APIKey == "" || out.APIKey == oldKey {
+		t.Fatalf("rotate returned apiKey = %q, want a new non-empty key", out.APIKey)
+	}
+
+	resp := bearerRequest(t, http.MethodGet, srv.URL+centralapi.UsersPath, oldKey, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("old key after rotate: status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	resp = bearerRequest(t, http.MethodGet, srv.URL+centralapi.SessionPath, out.APIKey, nil)
+	defer resp.Body.Close()
+	var session centralapi.SessionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
+	if session.Username != "ci-bot" {
+		t.Errorf("session via rotated key = %+v, want username=ci-bot", session)
+	}
+}
+
+// Managing service accounts is admin-only, same as human accounts.
+func TestCreateServiceAccount_RequiresAdmin(t *testing.T) {
+	srv := newTestServer(t)
+	client := clientWithCookies(t, srv)
+	loginAsUser(t, srv, client, "carol", "pw12345", "contributor")
+
+	body, _ := json.Marshal(centralapi.CreateServiceAccountRequest{Username: "sneaky-bot", Role: "admin"})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+centralapi.ServiceAccountsPath, bytes.NewReader(body))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST service-accounts: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("contributor POST service-accounts: status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}

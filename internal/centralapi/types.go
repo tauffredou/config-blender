@@ -50,20 +50,26 @@ type SessionResponse struct {
 	Role          string `json:"role,omitempty"`
 }
 
-// UsersPath is the base path for managing configblender's own user
-// accounts (docs/07-open-questions.md — roles gate write endpoints:
-// RoleAdmin/RoleSourceManager/RoleContributor in internal/userdb). Every
+// UsersPath is the base path for managing configblender's own accounts —
+// human and service alike (docs/07-open-questions.md — roles gate write
+// endpoints: RoleAdmin/RoleSourceManager/RoleContributor/RoleRead in
+// internal/userdb, the one RBAC model shared by both account kinds). Every
 // endpoint here is RoleAdmin-only.
-//   - GET    UsersPath              — list accounts (ListUsersResponse), never including passwords
-//   - POST   UsersPath              — create an account (CreateUserRequest)
-//   - PUT    UsersPath/{username}   — change role and/or password (UpdateUserRequest)
-//   - DELETE UsersPath/{username}   — remove an account
+//   - GET    UsersPath              — list every account, human and service (ListUsersResponse), never including credentials
+//   - POST   UsersPath              — create a human account (CreateUserRequest)
+//   - PUT    UsersPath/{username}   — change role and/or password (UpdateUserRequest); Password is rejected for a service account
+//   - DELETE UsersPath/{username}   — remove an account, either kind
+//
+// ServiceAccountsPath below is the parallel surface for the other account
+// kind — creation and key rotation, since a service account has no
+// password to set via UpdateUserRequest.
 const UsersPath = "/v1/users"
 
 // User is the wire form of a registered account — never includes a
-// password or password hash.
+// password, password hash, or API key/hash.
 type User struct {
 	Username  string    `json:"username"`
+	Kind      string    `json:"kind"`
 	Role      string    `json:"role"`
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -73,7 +79,9 @@ type ListUsersResponse struct {
 	Users []User `json:"users"`
 }
 
-// CreateUserRequest is the JSON body of POST UsersPath.
+// CreateUserRequest is the JSON body of POST UsersPath — always creates a
+// human (password) account; see CreateServiceAccountRequest for the other
+// kind.
 type CreateUserRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -82,10 +90,40 @@ type CreateUserRequest struct {
 
 // UpdateUserRequest is the JSON body of PUT UsersPath/{username}. Role and
 // Password are each optional — set whichever should change; an empty
-// Password leaves the account's password unchanged.
+// Password leaves the account's password unchanged. Password is invalid
+// (400) for a service account — rotate its key via ServiceAccountsPath
+// instead.
 type UpdateUserRequest struct {
 	Role     string `json:"role,omitempty"`
 	Password string `json:"password,omitempty"`
+}
+
+// ServiceAccountsPath manages machine accounts that authenticate with
+// `Authorization: Bearer <api-key>` on every request instead of a
+// username/password session — the Vault-token idiom for CI/scripts, gated
+// by the same Role vocabulary as human accounts (RoleAdmin-only to manage,
+// same as UsersPath):
+//   - POST ServiceAccountsPath/{username}/rotate — replace the account's API key, returning the new one once
+//   - POST ServiceAccountsPath                   — create a service account (CreateServiceAccountRequest), returning its API key once
+//
+// A service account is listed, role-changed, and deleted through UsersPath
+// like any other account — this path only covers what's specific to having
+// an API key instead of a password.
+const ServiceAccountsPath = "/v1/service-accounts"
+
+// CreateServiceAccountRequest is the JSON body of POST ServiceAccountsPath.
+type CreateServiceAccountRequest struct {
+	Username string `json:"username"`
+	Role     string `json:"role"`
+}
+
+// ServiceAccountKeyResponse is the JSON body of a successful POST
+// ServiceAccountsPath or POST ServiceAccountsPath/{username}/rotate call.
+// APIKey is shown here once — it is never retrievable again, only rotated.
+type ServiceAccountKeyResponse struct {
+	Username string `json:"username"`
+	Role     string `json:"role"`
+	APIKey   string `json:"apiKey"`
 }
 
 // RecipesPath is the base path for consulting Recipes, including their

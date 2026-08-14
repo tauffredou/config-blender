@@ -77,14 +77,24 @@ export interface ResolveResponse {
   explain: Record<string, unknown>
 }
 
-// Role mirrors the Go role enum (internal/userdb): three flat values, no
+// Role mirrors the Go role enum (internal/userdb): four flat values, no
 // hierarchy except that the backend implicitly grants "admin" every check
 // that any other role satisfies — every allowed-role list in this UI must
-// include "admin" itself, mirroring the backend's route table.
-export type Role = "admin" | "source-manager" | "contributor"
+// include "admin" itself, mirroring the backend's route table. "read"
+// grants no write endpoint at all; it exists to give a caller (typically a
+// service account) an identity distinct from anonymous without granting it
+// any write.
+export type Role = "admin" | "source-manager" | "contributor" | "read"
+
+// Kind distinguishes a human account (username/password, session-cookie
+// login) from a service account (no password — an API key instead,
+// presented as `Authorization: Bearer <api-key>` on every request, the
+// Vault-token idiom for machine callers).
+export type Kind = "human" | "service"
 
 export interface User {
   username: string
+  kind: Kind
   role: Role
   createdAt: string
 }
